@@ -5,5 +5,16 @@
 
   "triggers": {
     "crons": ["* * * * *"]
-  }
+  },
+
+  "secrets": {
+    "required": ["BOT_TOKEN"]
+  },
+
+  "kv_namespaces": [
+    {
+      "binding": "ALERT_STATE",
+      "id": "2acc29ededb344fe80391c70db369861"
+    }
+  ]
 }
