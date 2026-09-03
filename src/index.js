@@ -8,15 +8,27 @@ export default {
   async fetch(request, env) {
     const url = new URL(request.url);
 
-    // БЕЗОПАСНАЯ ПРОВЕРКА BOT_TOKEN
+    // ТЕСТ ОТПРАВКИ СООБЩЕНИЯ В TELEGRAM
     if (url.pathname === "/test") {
-      const token = env.BOT_TOKEN;
+      try {
+        await sendTelegram(
+          env,
+          `🧪 <b>ТЕСТ БОТА</b>\n\n` +
+          `📍 Бровари та Броварський район\n` +
+          `🤖 Telegram-бот работает правильно!`
+        );
 
-      return new Response(
-        token
-          ? `BOT_TOKEN найден ✅\nДлина токена: ${token.length}`
-          : "BOT_TOKEN НЕ найден ❌"
-      );
+        return new Response(
+          "Тестовое сообщение отправлено ✅"
+        );
+      } catch (error) {
+        console.log("TEST ERROR:", error);
+
+        return new Response(
+          `Ошибка отправки в Telegram ❌\n\n${error.message}`,
+          { status: 500 }
+        );
+      }
     }
 
     return new Response(
@@ -28,6 +40,7 @@ export default {
     ctx.waitUntil(checkAlert(env));
   },
 };
+
 
 async function checkAlert(env) {
   try {
@@ -42,13 +55,15 @@ async function checkAlert(env) {
         "API error:",
         response.status
       );
+
       return;
     }
 
     const data = await response.json();
 
     const alert = (data.alerts || []).find(
-      (item) => item.slug === DISTRICT_SLUG
+      (item) =>
+        item.slug === DISTRICT_SLUG
     );
 
     const isActive = Boolean(alert);
@@ -78,8 +93,12 @@ async function checkAlert(env) {
     const oldState =
       JSON.parse(oldStateRaw);
 
+
     // НАЧАЛО ТРЕВОГИ
-    if (!oldState.active && isActive) {
+    if (
+      !oldState.active &&
+      isActive
+    ) {
       const startedAt =
         alert.started_at ||
         new Date().toISOString();
@@ -112,8 +131,12 @@ async function checkAlert(env) {
       return;
     }
 
+
     // ОТБОЙ ТРЕВОГИ
-    if (oldState.active && !isActive) {
+    if (
+      oldState.active &&
+      !isActive
+    ) {
       const startedAt =
         oldState.started_at;
 
@@ -183,6 +206,7 @@ async function checkAlert(env) {
       return;
     }
 
+
     console.log(
       "No change. Active:",
       isActive
@@ -195,6 +219,7 @@ async function checkAlert(env) {
     );
   }
 }
+
 
 async function sendTelegram(
   env,
@@ -241,6 +266,7 @@ async function sendTelegram(
     );
   }
 }
+
 
 function formatKyivTime(
   isoString
