@@ -6,6 +6,20 @@ const STATE_KEY = "brovary_alert_state";
 
 export default {
   async fetch(request, env) {
+    const url = new URL(request.url);
+
+    // ВРЕМЕННЫЙ ТЕСТ TELEGRAM
+    if (url.pathname === "/test") {
+      await sendTelegram(
+        env,
+        `🧪 <b>ТЕСТ БОТА</b>\n\n` +
+        `📍 Бровари та Броварський район\n` +
+        `🤖 Telegram-бот працює правильно!`
+      );
+
+      return new Response("Тестовое сообщение отправлено ✅");
+    }
+
     return new Response("Бровари Тривога — бот работает ✅");
   },
 
@@ -16,7 +30,6 @@ export default {
 
 async function checkAlert(env) {
   try {
-    // Получаем текущие активные тревоги
     const response = await fetch(ALERT_API, {
       headers: {
         "User-Agent": "Brovary-Siren-Bot/1.0",
@@ -30,18 +43,14 @@ async function checkAlert(env) {
 
     const data = await response.json();
 
-    // Ищем Броварський район
     const alert = (data.alerts || []).find(
       (item) => item.slug === DISTRICT_SLUG
     );
 
     const isActive = Boolean(alert);
 
-    // Получаем предыдущее состояние
     const oldStateRaw = await env.ALERT_STATE.get(STATE_KEY);
 
-    // Первый запуск — просто запоминаем состояние,
-    // чтобы бот не отправил ложное сообщение.
     if (!oldStateRaw) {
       await env.ALERT_STATE.put(
         STATE_KEY,
@@ -57,9 +66,7 @@ async function checkAlert(env) {
 
     const oldState = JSON.parse(oldStateRaw);
 
-    // ==========================================
-    // ТРЕВОГА НАЧАЛАСЬ
-    // ==========================================
+    // НАЧАЛО ТРЕВОГИ
     if (!oldState.active && isActive) {
       const startedAt =
         alert.started_at || new Date().toISOString();
@@ -87,9 +94,7 @@ async function checkAlert(env) {
       return;
     }
 
-    // ==========================================
-    // ТРЕВОГА ЗАКОНЧИЛАСЬ
-    // ==========================================
+    // ОТБОЙ ТРЕВОГИ
     if (oldState.active && !isActive) {
       const startedAt = oldState.started_at;
       const finishedAt = new Date();
@@ -138,7 +143,6 @@ async function checkAlert(env) {
       return;
     }
 
-    // Ничего не изменилось
     console.log(
       "No change. Active:",
       isActive
@@ -149,8 +153,6 @@ async function checkAlert(env) {
   }
 }
 
-
-// Отправка сообщения в Telegram
 async function sendTelegram(env, text) {
   const url =
     `https://api.telegram.org/bot${env.BOT_TOKEN}/sendMessage`;
@@ -179,8 +181,6 @@ async function sendTelegram(env, text) {
   }
 }
 
-
-// Время Украины
 function formatKyivTime(isoString) {
   return new Intl.DateTimeFormat("uk-UA", {
     timeZone: "Europe/Kyiv",
