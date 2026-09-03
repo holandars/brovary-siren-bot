@@ -8,19 +8,20 @@ export default {
   async fetch(request, env) {
     const url = new URL(request.url);
 
-    // ВРЕМЕННЫЙ ТЕСТ TELEGRAM
+    // БЕЗОПАСНАЯ ПРОВЕРКА BOT_TOKEN
     if (url.pathname === "/test") {
-      await sendTelegram(
-        env,
-        `🧪 <b>ТЕСТ БОТА</b>\n\n` +
-        `📍 Бровари та Броварський район\n` +
-        `🤖 Telegram-бот працює правильно!`
-      );
+      const token = env.BOT_TOKEN;
 
-      return new Response("Тестовое сообщение отправлено ✅");
+      return new Response(
+        token
+          ? `BOT_TOKEN найден ✅\nДлина токена: ${token.length}`
+          : "BOT_TOKEN НЕ найден ❌"
+      );
     }
 
-    return new Response("Бровари Тривога — бот работает ✅");
+    return new Response(
+      "Бровари Тривога — бот работает ✅"
+    );
   },
 
   async scheduled(event, env, ctx) {
@@ -37,7 +38,10 @@ async function checkAlert(env) {
     });
 
     if (!response.ok) {
-      console.log("API error:", response.status);
+      console.log(
+        "API error:",
+        response.status
+      );
       return;
     }
 
@@ -49,27 +53,36 @@ async function checkAlert(env) {
 
     const isActive = Boolean(alert);
 
-    const oldStateRaw = await env.ALERT_STATE.get(STATE_KEY);
+    const oldStateRaw =
+      await env.ALERT_STATE.get(STATE_KEY);
 
+    // ПЕРВЫЙ ЗАПУСК
     if (!oldStateRaw) {
       await env.ALERT_STATE.put(
         STATE_KEY,
         JSON.stringify({
           active: isActive,
-          started_at: alert?.started_at || null,
+          started_at:
+            alert?.started_at || null,
         })
       );
 
-      console.log("Initial state saved:", isActive);
+      console.log(
+        "Initial state saved:",
+        isActive
+      );
+
       return;
     }
 
-    const oldState = JSON.parse(oldStateRaw);
+    const oldState =
+      JSON.parse(oldStateRaw);
 
     // НАЧАЛО ТРЕВОГИ
     if (!oldState.active && isActive) {
       const startedAt =
-        alert.started_at || new Date().toISOString();
+        alert.started_at ||
+        new Date().toISOString();
 
       await env.ALERT_STATE.put(
         STATE_KEY,
@@ -79,7 +92,8 @@ async function checkAlert(env) {
         })
       );
 
-      const time = formatKyivTime(startedAt);
+      const time =
+        formatKyivTime(startedAt);
 
       await sendTelegram(
         env,
@@ -90,37 +104,59 @@ async function checkAlert(env) {
         `ℹ️ Джерело даних: Tryvoha.online`
       );
 
-      console.log("ALERT START:", startedAt);
+      console.log(
+        "ALERT START:",
+        startedAt
+      );
+
       return;
     }
 
     // ОТБОЙ ТРЕВОГИ
     if (oldState.active && !isActive) {
-      const startedAt = oldState.started_at;
-      const finishedAt = new Date();
+      const startedAt =
+        oldState.started_at;
 
-      let duration = "невідомо";
+      const finishedAt =
+        new Date();
+
+      let duration =
+        "невідомо";
 
       if (startedAt) {
-        const start = new Date(startedAt);
-        const minutes = Math.max(
-          0,
-          Math.round((finishedAt - start) / 60000)
-        );
+        const start =
+          new Date(startedAt);
 
-        const hours = Math.floor(minutes / 60);
-        const mins = minutes % 60;
+        const minutes =
+          Math.max(
+            0,
+            Math.round(
+              (finishedAt - start) /
+                60000
+            )
+          );
+
+        const hours =
+          Math.floor(
+            minutes / 60
+          );
+
+        const mins =
+          minutes % 60;
 
         if (hours > 0) {
-          duration = `${hours} год ${mins} хв`;
+          duration =
+            `${hours} год ${mins} хв`;
         } else {
-          duration = `${mins} хв`;
+          duration =
+            `${mins} хв`;
         }
       }
 
-      const endTime = formatKyivTime(
-        finishedAt.toISOString()
-      );
+      const endTime =
+        formatKyivTime(
+          finishedAt.toISOString()
+        );
 
       await env.ALERT_STATE.put(
         STATE_KEY,
@@ -139,7 +175,11 @@ async function checkAlert(env) {
         `ℹ️ Джерело даних: Tryvoha.online`
       );
 
-      console.log("ALERT END:", endTime);
+      console.log(
+        "ALERT END:",
+        endTime
+      );
+
       return;
     }
 
@@ -149,30 +189,51 @@ async function checkAlert(env) {
     );
 
   } catch (error) {
-    console.log("Worker error:", error);
+    console.log(
+      "Worker error:",
+      error
+    );
   }
 }
 
-async function sendTelegram(env, text) {
+async function sendTelegram(
+  env,
+  text
+) {
   const url =
     `https://api.telegram.org/bot${env.BOT_TOKEN}/sendMessage`;
 
-  const response = await fetch(url, {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-    },
-    body: JSON.stringify({
-      chat_id: "@brovary_siren",
-      text: text,
-      parse_mode: "HTML",
-      disable_web_page_preview: true,
-    }),
-  });
+  const response =
+    await fetch(url, {
+      method: "POST",
 
-  const result = await response.text();
+      headers: {
+        "Content-Type":
+          "application/json",
+      },
 
-  console.log("Telegram:", response.status, result);
+      body: JSON.stringify({
+        chat_id:
+          "@brovary_siren",
+
+        text: text,
+
+        parse_mode:
+          "HTML",
+
+        disable_web_page_preview:
+          true,
+      }),
+    });
+
+  const result =
+    await response.text();
+
+  console.log(
+    "Telegram:",
+    response.status,
+    result
+  );
 
   if (!response.ok) {
     throw new Error(
@@ -181,11 +242,22 @@ async function sendTelegram(env, text) {
   }
 }
 
-function formatKyivTime(isoString) {
-  return new Intl.DateTimeFormat("uk-UA", {
-    timeZone: "Europe/Kyiv",
-    hour: "2-digit",
-    minute: "2-digit",
-    hour12: false,
-  }).format(new Date(isoString));
+function formatKyivTime(
+  isoString
+) {
+  return new Intl.DateTimeFormat(
+    "uk-UA",
+    {
+      timeZone:
+        "Europe/Kyiv",
+
+      hour: "2-digit",
+
+      minute: "2-digit",
+
+      hour12: false,
+    }
+  ).format(
+    new Date(isoString)
+  );
 }
