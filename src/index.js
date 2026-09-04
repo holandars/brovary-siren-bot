@@ -117,10 +117,8 @@ async function checkAlert(env) {
       await sendTelegram(
         env,
         `🚨 <b>ПОВІТРЯНА ТРИВОГА</b>\n\n` +
-        `📍 Бровари та Броварський район\n` +
-        `🕐 Початок: <b>${time}</b>\n\n` +
-        `⚠️ Пройдіть в укриття та перебувайте там до офіційного відбою.\n\n` +
-        `ℹ️ Джерело даних: Tryvoha.online`
+
+        `⚠️ Пройдіть в укриття та перебувайте там до офіційного відбою.`
       );
 
       console.log(
@@ -192,10 +190,8 @@ async function checkAlert(env) {
       await sendTelegram(
         env,
         `🟢 <b>ВІДБІЙ ПОВІТРЯНОЇ ТРИВОГИ</b>\n\n` +
-        `📍 Бровари та Броварський район\n` +
-        `🕐 Відбій: <b>${endTime}</b>\n` +
-        `⏱ Тривалість: <b>${duration}</b>\n\n` +
-        `ℹ️ Джерело даних: Tryvoha.online`
+        
+        `⏱ Тривалість: <b>${duration}</b>\n\n`
       );
 
       console.log(
