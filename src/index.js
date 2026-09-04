@@ -233,7 +233,7 @@ async function sendTelegram(
 
       body: JSON.stringify({
         chat_id:
-          "@brovary_siren",
+          "@brovary_tryvoha",
 
         text: text,
 
