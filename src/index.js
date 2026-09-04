@@ -117,7 +117,6 @@ async function checkAlert(env) {
       await sendTelegram(
         env,
         `🚨 <b>ПОВІТРЯНА ТРИВОГА</b>\n\n` +
-
         `⚠️ Пройдіть в укриття та перебувайте там до офіційного відбою.`
       );
 
@@ -190,7 +189,6 @@ async function checkAlert(env) {
       await sendTelegram(
         env,
         `🟢 <b>ВІДБІЙ ПОВІТРЯНОЇ ТРИВОГИ</b>\n\n` +
-        
         `⏱ Тривалість: <b>${duration}</b>\n\n`
       );
 
