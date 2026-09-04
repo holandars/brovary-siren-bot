@@ -8,31 +8,31 @@ export default {
   async fetch(request, env) {
     const url = new URL(request.url);
 
-    // ТЕСТ ОТПРАВКИ СООБЩЕНИЯ В TELEGRAM
+    // ТЕСТ ВIДПРАВКИ ПОВiДОМЛЕННЯ В TELEGRAM
     if (url.pathname === "/test") {
       try {
         await sendTelegram(
           env,
           `🧪 <b>ТЕСТ БОТА</b>\n\n` +
           `📍 Бровари та Броварський район\n` +
-          `🤖 Telegram-бот работает правильно!`
+          `🤖 Telegram-бот працює вiрно!`
         );
 
         return new Response(
-          "Тестовое сообщение отправлено ✅"
+          "Тестове повiдомлення вiдправлено ✅"
         );
       } catch (error) {
         console.log("TEST ERROR:", error);
 
         return new Response(
-          `Ошибка отправки в Telegram ❌\n\n${error.message}`,
+          `Помилка вiдправки в Telegram ❌\n\n${error.message}`,
           { status: 500 }
         );
       }
     }
 
     return new Response(
-      "Бровари Тривога — бот работает ✅"
+      "Бровари Тривога — бот працює ✅"
     );
   },
 
@@ -71,7 +71,7 @@ async function checkAlert(env) {
     const oldStateRaw =
       await env.ALERT_STATE.get(STATE_KEY);
 
-    // ПЕРВЫЙ ЗАПУСК
+    // ПЕРШИЙ ЗАПУСК
     if (!oldStateRaw) {
       await env.ALERT_STATE.put(
         STATE_KEY,
@@ -94,7 +94,7 @@ async function checkAlert(env) {
       JSON.parse(oldStateRaw);
 
 
-    // НАЧАЛО ТРЕВОГИ
+    // ПОЧАТОК ТРИВОГИ
     if (
       !oldState.active &&
       isActive
@@ -129,7 +129,7 @@ async function checkAlert(env) {
     }
 
 
-    // ОТБОЙ ТРЕВОГИ
+    // ВIДБIЙ ТРИВОГИ
     if (
       oldState.active &&
       !isActive
@@ -189,7 +189,7 @@ async function checkAlert(env) {
       await sendTelegram(
         env,
         `🟢 <b>ВІДБІЙ ПОВІТРЯНОЇ ТРИВОГИ</b>\n\n` +
-        `⏱ Тривалість: <b>${duration}</b>\n\n`
+        `⏱ Небезпека тривала: <b>${duration}</b>\n\n`
       );
 
       console.log(
