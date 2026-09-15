@@ -1,80 +1,180 @@
-const ALERT_API = "https://neptun.in.ua/api/v1/alerts";
+// ============================================================
+// НАЛАШТУВАННЯ
+// ============================================================
 
-const DISTRICT_KEY = "броварський";
-const STATE_KEY = "brovary_alert_state";
+// API NEPTUN.
+// Worker отримує звідси інформацію про активні тривоги.
+const ALERT_API =
+  "https://neptun.in.ua/api/v1/alerts";
 
-const LOCK_KEY = "brovary_alert_worker_lock";
-const LOCK_TTL_SECONDS = 90;
 
+// Ключ Броварського району в API NEPTUN.
+const DISTRICT_KEY =
+  "броварський";
+
+
+// Назва запису в Cloudflare KV,
+// де зберігається поточний стан тривоги.
+const STATE_KEY =
+  "brovary_alert_state";
+
+
+// Скільки перевірок робити за один запуск Worker.
 const CHECKS_PER_RUN = 6;
+
+
+// Інтервал між перевірками.
+//
+// 10 000 мілісекунд = 10 секунд.
 const CHECK_INTERVAL_MS = 10_000;
 
-const TELEGRAM_CHAT_ID = "@brovary_tryvoha";
+
+// Telegram-канал,
+// куди бот відправляє повідомлення.
+const TELEGRAM_CHAT_ID =
+  "@brovary_tryvoha";
 
 
 // ============================================================
-// WORKER
+// CLOUDFLARE WORKER
 // ============================================================
 
 export default {
+
+  // ----------------------------------------------------------
+  // АВТОМАТИЧНИЙ ЗАПУСК
+  // ----------------------------------------------------------
+  //
+  // Cloudflare Cron запускає Worker 1 раз на хвилину.
+  //
+  // Усередині цього запуску ми робимо 6 перевірок:
+  //
+  // 00 сек → перевірка
+  // 10 сек → перевірка
+  // 20 сек → перевірка
+  // 30 сек → перевірка
+  // 40 сек → перевірка
+  // 50 сек → перевірка
+  //
+  // Таким чином перевірка відбувається приблизно
+  // кожні 10 секунд.
+
   async scheduled(event, env, ctx) {
     await runChecks(env);
   },
 
-  async fetch(request, env) {
-    const url = new URL(request.url);
 
-    // --------------------------------------------------------
-    // Тест Telegram
-    // --------------------------------------------------------
+  // ----------------------------------------------------------
+  // РУЧНІ URL
+  // ----------------------------------------------------------
+  //
+  // Доступні:
+  //
+  // /test
+  // /check
+  //
+
+  async fetch(request, env) {
+
+    const url =
+      new URL(request.url);
+
+
+    // ========================================================
+    // /test
+    // ========================================================
+    //
+    // Перевіряє, чи Worker може відправити
+    // повідомлення в Telegram.
+    //
+    // NEPTUN тут НЕ використовується.
 
     if (url.pathname === "/test") {
+
       try {
+
         await sendTelegram(
           env,
+
           `🧪 <b>ТЕСТ БОТА</b>
 
 Бот працює коректно.`
         );
 
-        return new Response("Test message sent");
+
+        return new Response(
+          "Test message sent"
+        );
+
       } catch (error) {
-        console.error("Telegram test error:", error);
+
+        console.error(
+          "Telegram test error:",
+          error
+        );
+
 
         return new Response(
           `Telegram error: ${error.message}`,
-          { status: 500 }
+          {
+            status: 500,
+          }
         );
       }
     }
 
 
-    // --------------------------------------------------------
-    // Ручна перевірка
-    // --------------------------------------------------------
+    // ========================================================
+    // /check
+    // ========================================================
+    //
+    // Робить одну ручну перевірку NEPTUN.
+    //
+    // Зручно для тестування.
 
     if (url.pathname === "/check") {
+
       try {
-        const result = await checkAlert(env);
+
+        const result =
+          await checkAlert(env);
+
 
         return new Response(
-          JSON.stringify(result, null, 2),
+          JSON.stringify(
+            result,
+            null,
+            2
+          ),
           {
             headers: {
-              "Content-Type": "application/json",
+              "Content-Type":
+                "application/json",
             },
           }
         );
+
       } catch (error) {
-        console.error("Manual check error:", error);
+
+        console.error(
+          "Manual check error:",
+          error
+        );
+
 
         return new Response(
           `Check error: ${error.message}`,
-          { status: 500 }
+          {
+            status: 500,
+          }
         );
       }
     }
 
+
+    // ========================================================
+    // ГОЛОВНА СТОРІНКА WORKER
+    // ========================================================
 
     return new Response(
       "Brovary alert worker is running."
@@ -84,52 +184,57 @@ export default {
 
 
 // ============================================================
-// ОСНОВНИЙ ЦИКЛ
+// ОСНОВНИЙ ЦИКЛ ПЕРЕВІРОК
 // ============================================================
 
 async function runChecks(env) {
-  const lockId = crypto.randomUUID();
 
-  const existingLock = await env.ALERT_STATE.get(LOCK_KEY);
+  // Робимо 6 перевірок.
 
-  if (existingLock) {
-    console.log("Another worker run is already active.");
-    return;
-  }
+  for (
+    let i = 0;
+    i < CHECKS_PER_RUN;
+    i++
+  ) {
 
-  await env.ALERT_STATE.put(
-    LOCK_KEY,
-    lockId,
-    {
-      expirationTtl: LOCK_TTL_SECONDS,
-    }
-  );
+    console.log(
+      `Alert check ${i + 1}/${CHECKS_PER_RUN}`
+    );
 
-  try {
-    for (let i = 0; i < CHECKS_PER_RUN; i++) {
-      console.log(
-        `Alert check ${i + 1}/${CHECKS_PER_RUN}`
+
+    // --------------------------------------------------------
+    // Виконуємо одну перевірку
+    // --------------------------------------------------------
+
+    try {
+
+      await checkAlert(env);
+
+    } catch (error) {
+
+      // Якщо одна перевірка завершилася помилкою,
+      // наступні перевірки все одно продовжаться.
+
+      console.error(
+        "Alert check error:",
+        error
       );
-
-      try {
-        await checkAlert(env);
-      } catch (error) {
-        console.error(
-          "Alert check error:",
-          error
-        );
-      }
-
-      if (i < CHECKS_PER_RUN - 1) {
-        await sleep(CHECK_INTERVAL_MS);
-      }
     }
-  } finally {
-    const currentLock =
-      await env.ALERT_STATE.get(LOCK_KEY);
 
-    if (currentLock === lockId) {
-      await env.ALERT_STATE.delete(LOCK_KEY);
+
+    // --------------------------------------------------------
+    // Чекаємо 10 секунд
+    // --------------------------------------------------------
+    //
+    // Після останньої перевірки чекати вже не потрібно.
+
+    if (
+      i < CHECKS_PER_RUN - 1
+    ) {
+
+      await sleep(
+        CHECK_INTERVAL_MS
+      );
     }
   }
 }
@@ -140,318 +245,638 @@ async function runChecks(env) {
 // ============================================================
 
 async function checkAlert(env) {
+
   let data;
 
-  // ----------------------------------------------------------
-  // Отримуємо дані NEPTUN
-  // ----------------------------------------------------------
+
+  // ==========================================================
+  // 1. ОТРИМУЄМО ДАНІ З NEPTUN
+  // ==========================================================
 
   try {
-    const response = await fetch(ALERT_API, {
-      method: "GET",
-      headers: {
-        "Accept": "application/json",
-        "User-Agent": "BrovaryAlertBot/1.0",
-      },
-    });
+
+    const response =
+      await fetch(
+        ALERT_API,
+        {
+          method: "GET",
+
+          headers: {
+            "Accept":
+              "application/json",
+
+            "User-Agent":
+              "BrovaryAlertBot/1.0",
+          },
+        }
+      );
+
+
+    // --------------------------------------------------------
+    // Перевіряємо HTTP-відповідь
+    // --------------------------------------------------------
 
     if (!response.ok) {
+
       throw new Error(
         `NEPTUN HTTP ${response.status}`
       );
     }
 
-    data = await response.json();
+
+    // --------------------------------------------------------
+    // Перетворюємо відповідь NEPTUN у JSON
+    // --------------------------------------------------------
+
+    data =
+      await response.json();
 
   } catch (error) {
+
     console.error(
       "NEPTUN request failed:",
       error
     );
 
-    // Не змінюємо стан при помилці API.
+
+    // --------------------------------------------------------
+    // ДУЖЕ ВАЖЛИВО
+    // --------------------------------------------------------
+    //
+    // Якщо NEPTUN тимчасово не працює,
+    // ми НЕ вважаємо це відбоєм.
+    //
+    // Старий стан у KV залишається без змін.
+    //
+    // Це захищає від ситуації:
+    //
+    // Тривога
+    // ↓
+    // NEPTUN тимчасово не відповідає
+    // ↓
+    // помилковий відбій
+    //
+    // Такого не буде.
+
     return {
       success: false,
-      error: "NEPTUN unavailable",
+      error:
+        "NEPTUN unavailable",
     };
   }
 
 
-  // ----------------------------------------------------------
-  // Перевіряємо структуру відповіді
-  // ----------------------------------------------------------
+  // ==========================================================
+  // 2. ПЕРЕВІРЯЄМО СТРУКТУРУ ВІДПОВІДІ
+  // ==========================================================
 
-  if (!data || !Array.isArray(data.raions)) {
+  if (
+    !data ||
+    !Array.isArray(data.raions)
+  ) {
+
     console.error(
       "Invalid NEPTUN response: raions is missing"
     );
 
+
+    // Не змінюємо стан KV.
+
     return {
       success: false,
-      error: "Invalid NEPTUN response",
+      error:
+        "Invalid NEPTUN response",
     };
   }
 
 
-  // ----------------------------------------------------------
-  // Шукаємо Броварський район
-  // ----------------------------------------------------------
+  // ==========================================================
+  // 3. ШУКАЄМО БРОВАРСЬКИЙ РАЙОН
+  // ==========================================================
 
-  const alert = data.raions.find(
-    item => item?.key === DISTRICT_KEY
-  );
+  const alert =
+    data.raions.find(
+      item =>
+        item?.key === DISTRICT_KEY
+    );
 
-  // Не враховуємо level:
+
+  // ==========================================================
+  // 4. ВИЗНАЧАЄМО, ЧИ Є ТРИВОГА
+  // ==========================================================
   //
-  // yellow = тривога
-  // red    = тривога
+  // Нас НЕ цікавить:
   //
-  // Важлива тільки наявність району.
+  // level = yellow
+  // level = red
+  //
+  // Обидва варіанти означають для нашого бота:
+  //
+  // ТРИВОГА.
+  //
+  // Нам важливо тільки:
+  //
+  // чи є Броварський район у raions.
 
-  const isActive = Boolean(alert);
+  const isActive =
+    Boolean(alert);
 
 
-  // ----------------------------------------------------------
-  // Отримуємо старий стан
-  // ----------------------------------------------------------
+  // ==========================================================
+  // 5. ОТРИМУЄМО ПОПЕРЕДНІЙ СТАН
+  // ==========================================================
 
-  const oldState = await getState(env);
+  const oldState =
+    await getState(env);
+
 
   console.log(
     JSON.stringify({
-      currentAlert: isActive,
-      previousState: oldState,
+      currentAlert:
+        isActive,
+
+      previousState:
+        oldState,
     })
   );
 
 
   // ==========================================================
-  // ПЕРШИЙ ЗАПУСК
+  // 6. ПЕРШИЙ ЗАПУСК
   // ==========================================================
+  //
+  // Якщо в KV ще немає стану,
+  // ми просто запам'ятовуємо поточну ситуацію.
+  //
+  // Повідомлення НЕ відправляємо.
+  //
+  // Наприклад:
+  //
+  // Worker запустили,
+  // а тривога вже триває 40 хвилин.
+  //
+  // Бот не буде писати новий "ПОЧАТОК ТРИВОГИ".
+  //
+  // Він просто запам'ятає,
+  // що тривога вже активна.
 
   if (oldState === null) {
-    await saveState(env, {
-      active: isActive,
-      started_at: isActive
-        ? (
-            alert?.since ||
-            new Date().toISOString()
-          )
-        : null,
-    });
+
+    await saveState(
+      env,
+      {
+        active:
+          isActive,
+
+        started_at:
+          isActive
+            ? (
+                alert?.since ||
+                new Date().toISOString()
+              )
+            : null,
+      }
+    );
+
 
     console.log(
       `Initial state saved. Active: ${isActive}`
     );
 
+
     return {
       success: true,
-      action: "initial_state",
-      active: isActive,
+      action:
+        "initial_state",
+      active:
+        isActive,
     };
   }
 
 
   // ==========================================================
-  // ТРИВОГА ПОЧАЛАСЯ
+  // 7. ПОЧАЛАСЯ ТРИВОГА
   // ==========================================================
+  //
+  // Було:
+  //
+  // active = false
+  //
+  // Стало:
+  //
+  // isActive = true
 
-  if (!oldState.active && isActive) {
+  if (
+    !oldState.active &&
+    isActive
+  ) {
+
+    // --------------------------------------------------------
+    // Час початку тривоги
+    // --------------------------------------------------------
+
     const startedAt =
       alert?.since ||
       new Date().toISOString();
 
+
     try {
+
+      // ------------------------------------------------------
+      // Відправляємо повідомлення в Telegram
+      // ------------------------------------------------------
+
       await sendTelegram(
         env,
-        `🔴 <b>ПОВІТРЯНА ТРИВОГА</b>
+
+        `🚨 <b>ПОВІТРЯНА ТРИВОГА</b>
 
 ⚠️ Пройдіть в укриття та перебувайте там до офіційного відбою.`
       );
 
-      await saveState(env, {
-        active: true,
-        started_at: startedAt,
-      });
 
-      console.log("ALERT STARTED");
+      // ------------------------------------------------------
+      // Telegram успішно прийняв повідомлення.
+      //
+      // Тепер зберігаємо стан.
+      // ------------------------------------------------------
+
+      await saveState(
+        env,
+        {
+          active: true,
+
+          started_at:
+            startedAt,
+        }
+      );
+
+
+      console.log(
+        "ALERT STARTED"
+      );
+
 
       return {
         success: true,
-        action: "alert_started",
+        action:
+          "alert_started",
       };
 
     } catch (error) {
+
+      // ------------------------------------------------------
+      // Якщо Telegram не прийняв повідомлення,
+      // стан НЕ записуємо як active.
+      //
+      // Наступна перевірка спробує відправити
+      // повідомлення ще раз.
+      // ------------------------------------------------------
+
       console.error(
         "Failed to send ALERT STARTED:",
         error
       );
 
+
       return {
         success: false,
-        action: "telegram_error",
+        action:
+          "telegram_error",
       };
     }
   }
 
 
   // ==========================================================
-  // ТРИВОГА ПРОДОВЖУЄТЬСЯ
+  // 8. ТРИВОГА ПРОДОВЖУЄТЬСЯ
   // ==========================================================
+  //
+  // Було:
+  //
+  // active = true
+  //
+  // Стало:
+  //
+  // isActive = true
+  //
+  // Нічого не робимо.
 
-  if (oldState.active && isActive) {
-    // yellow -> red    = нічого
-    // red -> yellow    = нічого
-    // yellow -> yellow = нічого
-    // red -> red       = нічого
+  if (
+    oldState.active &&
+    isActive
+  ) {
+
+    // yellow → yellow
+    // yellow → red
+    // red → yellow
+    // red → red
+    //
+    // Усі ці зміни ігноруються.
 
     return {
       success: true,
-      action: "alert_still_active",
+      action:
+        "alert_still_active",
     };
   }
 
 
   // ==========================================================
-  // ВІДБІЙ
+  // 9. ВІДБІЙ
   // ==========================================================
+  //
+  // Було:
+  //
+  // active = true
+  //
+  // Стало:
+  //
+  // isActive = false
 
-  if (oldState.active && !isActive) {
-    const endedAt = new Date();
+  if (
+    oldState.active &&
+    !isActive
+  ) {
 
-    const startedAt = oldState.started_at
-      ? new Date(oldState.started_at)
-      : null;
+    // --------------------------------------------------------
+    // Час закінчення тривоги
+    // --------------------------------------------------------
 
-    const duration = startedAt
-      ? formatDuration(
-          endedAt.getTime() -
-          startedAt.getTime()
-        )
-      : "невідомо";
+    const endedAt =
+      new Date();
+
+
+    // --------------------------------------------------------
+    // Час початку тривоги
+    // --------------------------------------------------------
+
+    const startedAt =
+      oldState.started_at
+        ? new Date(
+            oldState.started_at
+          )
+        : null;
+
+
+    // --------------------------------------------------------
+    // Рахуємо тривалість
+    // --------------------------------------------------------
+
+    const duration =
+      startedAt
+        ? formatDuration(
+            endedAt.getTime() -
+            startedAt.getTime()
+          )
+        : "невідомо";
 
 
     try {
+
+      // ------------------------------------------------------
+      // Відправляємо відбій у Telegram
+      // ------------------------------------------------------
+
       await sendTelegram(
         env,
+
         `🟢 <b>ВІДБІЙ ПОВІТРЯНОЇ ТРИВОГИ</b>
 
 ⏱️ Небезпека тривала: <b>${duration}</b>`
       );
 
-      await saveState(env, {
-        active: false,
-        started_at: null,
-      });
+
+      // ------------------------------------------------------
+      // Telegram успішно прийняв повідомлення.
+      //
+      // Тепер записуємо, що тривоги немає.
+      // ------------------------------------------------------
+
+      await saveState(
+        env,
+        {
+          active: false,
+
+          started_at: null,
+        }
+      );
+
 
       console.log(
         `ALERT ENDED. Duration: ${duration}`
       );
 
+
       return {
         success: true,
-        action: "alert_ended",
-        duration,
+
+        action:
+          "alert_ended",
+
+        duration:
+          duration,
       };
 
     } catch (error) {
+
+      // ------------------------------------------------------
+      // Якщо Telegram не прийняв відбій,
+      // старий стан active=true залишається.
+      //
+      // Наступна перевірка знову спробує
+      // відправити відбій.
+      // ------------------------------------------------------
+
       console.error(
         "Failed to send ALERT ENDED:",
         error
       );
 
+
       return {
         success: false,
-        action: "telegram_error",
+
+        action:
+          "telegram_error",
       };
     }
   }
 
 
+  // ==========================================================
+  // 10. НІЧОГО НЕ ЗМІНИЛОСЯ
+  // ==========================================================
+
   return {
     success: true,
-    action: "no_change",
-    active: isActive,
+
+    action:
+      "no_change",
+
+    active:
+      isActive,
   };
 }
 
 
 // ============================================================
-// KV STATE
+// ОТРИМАННЯ СТАНУ З CLOUDFLARE KV
 // ============================================================
 
 async function getState(env) {
-  const raw = await env.ALERT_STATE.get(
-    STATE_KEY
-  );
+
+  // Читаємо стан із KV.
+
+  const raw =
+    await env.ALERT_STATE.get(
+      STATE_KEY
+    );
+
+
+  // Якщо запису немає,
+  // повертаємо null.
 
   if (!raw) {
     return null;
   }
 
+
+  // ----------------------------------------------------------
+  // Перетворюємо JSON-текст назад у JavaScript-об'єкт
+  // ----------------------------------------------------------
+
   try {
+
     return JSON.parse(raw);
+
   } catch (error) {
+
     console.error(
       "Invalid state in KV:",
       error
     );
+
 
     return null;
   }
 }
 
 
-async function saveState(env, state) {
+// ============================================================
+// ЗБЕРЕЖЕННЯ СТАНУ В CLOUDFLARE KV
+// ============================================================
+
+async function saveState(
+  env,
+  state
+) {
+
   await env.ALERT_STATE.put(
     STATE_KEY,
-    JSON.stringify(state)
+
+    JSON.stringify(
+      state
+    )
   );
 }
 
 
 // ============================================================
-// TELEGRAM
+// ВІДПРАВКА ПОВІДОМЛЕННЯ В TELEGRAM
 // ============================================================
 
-async function sendTelegram(env, text) {
+async function sendTelegram(
+  env,
+  text
+) {
+
+  // ----------------------------------------------------------
+  // Перевіряємо, чи є BOT_TOKEN
+  // ----------------------------------------------------------
+
   if (!env.BOT_TOKEN) {
+
     throw new Error(
       "BOT_TOKEN is not configured"
     );
   }
 
+
+  // ----------------------------------------------------------
+  // Адреса Telegram API
+  // ----------------------------------------------------------
+
   const url =
     `https://api.telegram.org/bot${env.BOT_TOKEN}/sendMessage`;
 
-  const response = await fetch(url, {
-    method: "POST",
 
-    headers: {
-      "Content-Type": "application/json",
-    },
+  // ----------------------------------------------------------
+  // Відправляємо POST-запит
+  // ----------------------------------------------------------
 
-    body: JSON.stringify({
-      chat_id: TELEGRAM_CHAT_ID,
-      text,
-      parse_mode: "HTML",
-      disable_web_page_preview: true,
-    }),
-  });
+  const response =
+    await fetch(
+      url,
+      {
+        method: "POST",
 
+        headers: {
+          "Content-Type":
+            "application/json",
+        },
+
+        body: JSON.stringify(
+          {
+            chat_id:
+              TELEGRAM_CHAT_ID,
+
+            text:
+              text,
+
+            // Дозволяє використовувати
+            // <b>жирний текст</b>.
+            parse_mode:
+              "HTML",
+
+            // Не створювати прев'ю посилань.
+            disable_web_page_preview:
+              true,
+          }
+        ),
+      }
+    );
+
+
+  // ----------------------------------------------------------
+  // Отримуємо відповідь Telegram
+  // ----------------------------------------------------------
 
   let result;
 
+
   try {
-    result = await response.json();
+
+    result =
+      await response.json();
+
   } catch {
+
     throw new Error(
       `Telegram returned invalid JSON (HTTP ${response.status})`
     );
   }
 
 
-  if (!response.ok || !result.ok) {
+  // ----------------------------------------------------------
+  // Перевіряємо, чи Telegram прийняв повідомлення
+  // ----------------------------------------------------------
+
+  if (
+    !response.ok ||
+    !result.ok
+  ) {
+
     throw new Error(
       `Telegram API error: ${JSON.stringify(result)}`
     );
@@ -463,46 +888,101 @@ async function sendTelegram(env, text) {
 
 
 // ============================================================
-// ТРИВАЛІСТЬ
+// РОЗРАХУНОК ТРИВАЛОСТІ ТРИВОГИ
 // ============================================================
 
-function formatDuration(milliseconds) {
+function formatDuration(
+  milliseconds
+) {
+
+  // ----------------------------------------------------------
+  // Перевіряємо отримане значення
+  // ----------------------------------------------------------
+
   if (
-    !Number.isFinite(milliseconds) ||
+    !Number.isFinite(
+      milliseconds
+    ) ||
     milliseconds < 0
   ) {
+
     return "невідомо";
   }
 
-  const totalMinutes = Math.floor(
-    milliseconds / 60_000
-  );
 
-  const hours = Math.floor(
-    totalMinutes / 60
-  );
+  // ----------------------------------------------------------
+  // Перетворюємо мілісекунди в хвилини
+  // ----------------------------------------------------------
 
-  const minutes = totalMinutes % 60;
+  const totalMinutes =
+    Math.floor(
+      milliseconds /
+      60_000
+    );
 
 
-  if (hours === 0) {
+  // ----------------------------------------------------------
+  // Отримуємо кількість годин
+  // ----------------------------------------------------------
+
+  const hours =
+    Math.floor(
+      totalMinutes /
+      60
+    );
+
+
+  // ----------------------------------------------------------
+  // Отримуємо залишок хвилин
+  // ----------------------------------------------------------
+
+  const minutes =
+    totalMinutes % 60;
+
+
+  // ----------------------------------------------------------
+  // Якщо менше години
+  // ----------------------------------------------------------
+
+  if (
+    hours === 0
+  ) {
+
     return `${minutes} хв`;
   }
 
-  if (minutes === 0) {
+
+  // ----------------------------------------------------------
+  // Якщо рівно кілька годин
+  // ----------------------------------------------------------
+
+  if (
+    minutes === 0
+  ) {
+
     return `${hours} год`;
   }
+
+
+  // ----------------------------------------------------------
+  // Якщо є години та хвилини
+  // ----------------------------------------------------------
 
   return `${hours} год ${minutes} хв`;
 }
 
 
 // ============================================================
-// SLEEP
+// ПАУЗА
 // ============================================================
 
 function sleep(ms) {
+
   return new Promise(
-    resolve => setTimeout(resolve, ms)
+    resolve =>
+      setTimeout(
+        resolve,
+        ms
+      )
   );
 }
