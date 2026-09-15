@@ -192,9 +192,6 @@ async function checkAlert(env) {
 
 ⚠️ Пройдіть в укриття та перебувайте там до офіційного відбою.
 
-📍 Броварський район
-
-📡 Дані: <a href="https://neptun.in.ua/">NEPTUN</a>`
     );
 
     console.log("ALERT STARTED");
@@ -246,9 +243,6 @@ async function checkAlert(env) {
 
 ⏱️ Небезпека тривала: <b>${duration}</b>
 
-📍 Броварський район
-
-📡 Дані: <a href="https://neptun.in.ua/">NEPTUN</a>`
     );
 
     console.log(
