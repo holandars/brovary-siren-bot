@@ -3,19 +3,20 @@ const ALERT_API = "https://neptun.in.ua/api/v1/alerts";
 const DISTRICT_KEY = "броварський";
 const STATE_KEY = "brovary_alert_state";
 
-// 1 запуск Cron щохвилини.
-// Усередині робимо 6 перевірок з інтервалом 10 секунд.
 const CHECKS_PER_RUN = 6;
 const CHECK_INTERVAL_MS = 10_000;
 
-// Захист від накладання двох запусків Cron.
-// ВАЖЛИВО: KV-lock не є атомарним 100% mutex.
-// Для практичного захисту від звичайних overlap цього достатньо.
-// Для строгого взаємного виключення потрібен Durable Object.
+// Практичний захист від паралельних запусків Cron.
+// KV-lock не є 100% атомарним mutex.
 const LOCK_KEY = "brovary_alert_worker_lock";
 const LOCK_TTL_SECONDS = 90;
 
 const TELEGRAM_CHAT_ID = "@brovary_tryvoha";
+
+
+// ============================================================
+// WORKER
+// ============================================================
 
 export default {
   async scheduled(event, env, ctx) {
@@ -25,16 +26,25 @@ export default {
   async fetch(request, env) {
     const url = new URL(request.url);
 
-    // Ручний тест Telegram
+    // --------------------------------------------------------
+    // /test — тест Telegram
+    // --------------------------------------------------------
+
     if (url.pathname === "/test") {
       try {
         await sendTelegram(
           env,
-          `🧪 <b>ТЕСТ БОТА</b>\n\nБот працює коректно.`
+          `🧪 <b>ТЕСТ БОТА</b>
+
+Бот працює коректно.`
         );
 
-        return new Response("Test message sent", { status: 200 });
+        return new Response("Test message sent", {
+          status: 200,
+        });
       } catch (error) {
+        console.error("Test error:", error);
+
         return new Response(
           `Telegram error: ${error.message}`,
           { status: 500 }
@@ -42,13 +52,21 @@ export default {
       }
     }
 
-    // Ручний запуск перевірки
+
+    // --------------------------------------------------------
+    // /check — ручна перевірка стану
+    // --------------------------------------------------------
+
     if (url.pathname === "/check") {
       try {
         await checkAlert(env);
 
-        return new Response("Check completed", { status: 200 });
+        return new Response("Check completed", {
+          status: 200,
+        });
       } catch (error) {
+        console.error("Check error:", error);
+
         return new Response(
           `Check error: ${error.message}`,
           { status: 500 }
@@ -56,7 +74,10 @@ export default {
       }
     }
 
-    return new Response("Brovary alert worker is running.");
+
+    return new Response(
+      "Brovary alert worker is running."
+    );
   },
 };
 
@@ -68,11 +89,14 @@ export default {
 async function runChecks(env) {
   const lockId = crypto.randomUUID();
 
-  // Перевіряємо, чи вже працює інший Cron
+  // Перевіряємо, чи вже працює інший запуск
   const existingLock = await env.ALERT_STATE.get(LOCK_KEY);
 
   if (existingLock) {
-    console.log("Another worker run is already active.");
+    console.log(
+      "Another worker run is already active."
+    );
+
     return;
   }
 
@@ -87,22 +111,28 @@ async function runChecks(env) {
 
   try {
     for (let i = 0; i < CHECKS_PER_RUN; i++) {
-      console.log(`Alert check ${i + 1}/${CHECKS_PER_RUN}`);
+      console.log(
+        `Alert check ${i + 1}/${CHECKS_PER_RUN}`
+      );
 
       try {
         await checkAlert(env);
       } catch (error) {
-        console.error("Alert check failed:", error);
+        console.error(
+          "Alert check failed:",
+          error
+        );
       }
 
-      // Не чекаємо після останньої перевірки
+      // Пауза між перевірками
       if (i < CHECKS_PER_RUN - 1) {
         await sleep(CHECK_INTERVAL_MS);
       }
     }
   } finally {
-    // Видаляємо lock тільки якщо це наш lock
-    const currentLock = await env.ALERT_STATE.get(LOCK_KEY);
+    // Видаляємо lock тільки якщо він наш
+    const currentLock =
+      await env.ALERT_STATE.get(LOCK_KEY);
 
     if (currentLock === lockId) {
       await env.ALERT_STATE.delete(LOCK_KEY);
@@ -118,6 +148,7 @@ async function runChecks(env) {
 async function checkAlert(env) {
   const response = await fetch(ALERT_API, {
     method: "GET",
+
     headers: {
       "Accept": "application/json",
       "User-Agent": "BrovaryAlertBot/1.0",
@@ -132,8 +163,22 @@ async function checkAlert(env) {
 
   const data = await response.json();
 
-  // Нас цікавить ТІЛЬКИ наявність Броварського району.
-  // yellow/red повністю ігноруємо.
+  // ==========================================================
+  // ГОЛОВНА ЛОГІКА
+  // ==========================================================
+  //
+  // Нам НЕ важливо:
+  // yellow
+  // red
+  // reasons
+  //
+  // Нас цікавить тільки:
+  //
+  // Є Броварський район у raions → ТРИВОГА
+  // Немає Броварського району → ВІДБОЮ
+  //
+  // ==========================================================
+
   const alert = (data.raions || []).find(
     item => item.key === DISTRICT_KEY
   );
@@ -143,11 +188,13 @@ async function checkAlert(env) {
   const oldState = await getState(env);
 
   console.log(
-    JSON.stringify({
-      isActive,
-      oldActive: oldState.active,
-      startedAt: oldState.started_at,
-    })
+    "Current state:",
+    oldState
+  );
+
+  console.log(
+    "Current alert:",
+    isActive
   );
 
 
@@ -156,12 +203,20 @@ async function checkAlert(env) {
   // ==========================================================
 
   if (oldState === null) {
-    // Якщо Worker запустився, коли тривога вже йде,
-    // просто синхронізуємо стан без відправки повідомлення.
+    // Якщо Worker стартував, коли тривога вже активна,
+    // просто запам'ятовуємо її стан.
+    //
+    // Повідомлення НЕ відправляємо,
+    // щоб після перезапуску не було помилкового
+    // повідомлення про початок тривоги.
+
     await saveState(env, {
       active: isActive,
       started_at: isActive
-        ? (alert?.since || new Date().toISOString())
+        ? (
+            alert?.since ||
+            new Date().toISOString()
+          )
         : null,
     });
 
@@ -174,25 +229,26 @@ async function checkAlert(env) {
 
 
   // ==========================================================
-  // ТРИВОГА ПОЧАЛАСЯ
+  // ПОЧАТОК ТРИВОГИ
   // ==========================================================
 
   if (!oldState.active && isActive) {
     const startedAt =
-      alert?.since || new Date().toISOString();
-
-    await saveState(env, {
-      active: true,
-      started_at: startedAt,
-    });
+      alert?.since ||
+      new Date().toISOString();
 
     await sendTelegram(
       env,
       `🚨 <b>ПОВІТРЯНА ТРИВОГА</b>
 
-⚠️ Пройдіть в укриття та перебувайте там до офіційного відбою.
-
+⚠️ Пройдіть в укриття та перебувайте там до офіційного відбою.`
     );
+
+    // Зберігаємо стан після успішної відправки
+    await saveState(env, {
+      active: true,
+      started_at: startedAt,
+    });
 
     console.log("ALERT STARTED");
 
@@ -201,49 +257,56 @@ async function checkAlert(env) {
 
 
   // ==========================================================
-  // ТРИВОГА ТРИВАЄ
+  // ТРИВОГА ПРОДОВЖУЄТЬСЯ
   // ==========================================================
 
   if (oldState.active && isActive) {
-    // Нічого не робимо.
+    // Нічого не відправляємо.
     //
-    // yellow -> red
-    // red -> yellow
-    //
-    // не створюють нових повідомлень.
+    // yellow → red    = нічого
+    // red → yellow    = нічого
+    // yellow → yellow = нічого
+    // red → red       = нічого
 
-    console.log("Alert is still active.");
+    console.log(
+      "Alert is still active."
+    );
 
     return;
   }
 
 
   // ==========================================================
-  // ВІДБІЙ
+  // ВІДБІЙ ТРИВОГИ
   // ==========================================================
 
   if (oldState.active && !isActive) {
     const endedAt = new Date();
+
     const startedAt = oldState.started_at
       ? new Date(oldState.started_at)
       : null;
 
     const duration = startedAt
-      ? formatDuration(endedAt - startedAt)
+      ? formatDuration(
+          endedAt.getTime() -
+          startedAt.getTime()
+        )
       : "невідомо";
-
-    await saveState(env, {
-      active: false,
-      started_at: null,
-    });
 
     await sendTelegram(
       env,
       `🟢 <b>ВІДБІЙ ПОВІТРЯНОЇ ТРИВОГИ</b>
 
-⏱️ Небезпека тривала: <b>${duration}</b>
-
+⏱️ Небезпека тривала: <b>${duration}</b>`
     );
+
+    // Після успішної відправки
+    // переводимо стан у "тривоги немає"
+    await saveState(env, {
+      active: false,
+      started_at: null,
+    });
 
     console.log(
       `ALERT ENDED. Duration: ${duration}`
@@ -259,7 +322,9 @@ async function checkAlert(env) {
 // ============================================================
 
 async function getState(env) {
-  const raw = await env.ALERT_STATE.get(STATE_KEY);
+  const raw = await env.ALERT_STATE.get(
+    STATE_KEY
+  );
 
   if (!raw) {
     return null;
@@ -268,7 +333,11 @@ async function getState(env) {
   try {
     return JSON.parse(raw);
   } catch (error) {
-    console.error("Invalid state in KV:", error);
+    console.error(
+      "Invalid state in KV:",
+      error
+    );
+
     return null;
   }
 }
@@ -288,7 +357,9 @@ async function saveState(env, state) {
 
 async function sendTelegram(env, text) {
   if (!env.BOT_TOKEN) {
-    throw new Error("BOT_TOKEN is not configured");
+    throw new Error(
+      "BOT_TOKEN is not configured"
+    );
   }
 
   const url =
@@ -296,9 +367,11 @@ async function sendTelegram(env, text) {
 
   const response = await fetch(url, {
     method: "POST",
+
     headers: {
       "Content-Type": "application/json",
     },
+
     body: JSON.stringify({
       chat_id: TELEGRAM_CHAT_ID,
       text,
@@ -324,7 +397,10 @@ async function sendTelegram(env, text) {
 // ============================================================
 
 function formatDuration(milliseconds) {
-  if (!Number.isFinite(milliseconds) || milliseconds < 0) {
+  if (
+    !Number.isFinite(milliseconds) ||
+    milliseconds < 0
+  ) {
     return "невідомо";
   }
 
@@ -332,16 +408,22 @@ function formatDuration(milliseconds) {
     milliseconds / 60_000
   );
 
-  const hours = Math.floor(totalMinutes / 60);
+  const hours = Math.floor(
+    totalMinutes / 60
+  );
+
   const minutes = totalMinutes % 60;
+
 
   if (hours === 0) {
     return `${minutes} хв`;
   }
 
+
   if (minutes === 0) {
     return `${hours} год`;
   }
+
 
   return `${hours} год ${minutes} хв`;
 }
@@ -352,5 +434,7 @@ function formatDuration(milliseconds) {
 // ============================================================
 
 function sleep(ms) {
-  return new Promise(resolve => setTimeout(resolve, ms));
+  return new Promise(
+    resolve => setTimeout(resolve, ms)
+  );
 }
