@@ -3,13 +3,11 @@ const ALERT_API = "https://neptun.in.ua/api/v1/alerts";
 const DISTRICT_KEY = "броварський";
 const STATE_KEY = "brovary_alert_state";
 
-const CHECKS_PER_RUN = 6;
-const CHECK_INTERVAL_MS = 10_000;
-
-// Практичний захист від паралельних запусків Cron.
-// KV-lock не є 100% атомарним mutex.
 const LOCK_KEY = "brovary_alert_worker_lock";
 const LOCK_TTL_SECONDS = 90;
+
+const CHECKS_PER_RUN = 6;
+const CHECK_INTERVAL_MS = 10_000;
 
 const TELEGRAM_CHAT_ID = "@brovary_tryvoha";
 
@@ -27,7 +25,7 @@ export default {
     const url = new URL(request.url);
 
     // --------------------------------------------------------
-    // /test — тест Telegram
+    // Тест Telegram
     // --------------------------------------------------------
 
     if (url.pathname === "/test") {
@@ -39,11 +37,9 @@ export default {
 Бот працює коректно.`
         );
 
-        return new Response("Test message sent", {
-          status: 200,
-        });
+        return new Response("Test message sent");
       } catch (error) {
-        console.error("Test error:", error);
+        console.error("Telegram test error:", error);
 
         return new Response(
           `Telegram error: ${error.message}`,
@@ -54,18 +50,23 @@ export default {
 
 
     // --------------------------------------------------------
-    // /check — ручна перевірка стану
+    // Ручна перевірка
     // --------------------------------------------------------
 
     if (url.pathname === "/check") {
       try {
-        await checkAlert(env);
+        const result = await checkAlert(env);
 
-        return new Response("Check completed", {
-          status: 200,
-        });
+        return new Response(
+          JSON.stringify(result, null, 2),
+          {
+            headers: {
+              "Content-Type": "application/json",
+            },
+          }
+        );
       } catch (error) {
-        console.error("Check error:", error);
+        console.error("Manual check error:", error);
 
         return new Response(
           `Check error: ${error.message}`,
@@ -89,18 +90,13 @@ export default {
 async function runChecks(env) {
   const lockId = crypto.randomUUID();
 
-  // Перевіряємо, чи вже працює інший запуск
   const existingLock = await env.ALERT_STATE.get(LOCK_KEY);
 
   if (existingLock) {
-    console.log(
-      "Another worker run is already active."
-    );
-
+    console.log("Another worker run is already active.");
     return;
   }
 
-  // Створюємо lock
   await env.ALERT_STATE.put(
     LOCK_KEY,
     lockId,
@@ -119,18 +115,16 @@ async function runChecks(env) {
         await checkAlert(env);
       } catch (error) {
         console.error(
-          "Alert check failed:",
+          "Alert check error:",
           error
         );
       }
 
-      // Пауза між перевірками
       if (i < CHECKS_PER_RUN - 1) {
         await sleep(CHECK_INTERVAL_MS);
       }
     }
   } finally {
-    // Видаляємо lock тільки якщо він наш
     const currentLock =
       await env.ALERT_STATE.get(LOCK_KEY);
 
@@ -146,55 +140,88 @@ async function runChecks(env) {
 // ============================================================
 
 async function checkAlert(env) {
-  const response = await fetch(ALERT_API, {
-    method: "GET",
+  let data;
 
-    headers: {
-      "Accept": "application/json",
-      "User-Agent": "BrovaryAlertBot/1.0",
-    },
-  });
+  // ----------------------------------------------------------
+  // Отримуємо дані NEPTUN
+  // ----------------------------------------------------------
 
-  if (!response.ok) {
-    throw new Error(
-      `NEPTUN API returned HTTP ${response.status}`
+  try {
+    const response = await fetch(ALERT_API, {
+      method: "GET",
+      headers: {
+        "Accept": "application/json",
+        "User-Agent": "BrovaryAlertBot/1.0",
+      },
+    });
+
+    if (!response.ok) {
+      throw new Error(
+        `NEPTUN HTTP ${response.status}`
+      );
+    }
+
+    data = await response.json();
+
+  } catch (error) {
+    console.error(
+      "NEPTUN request failed:",
+      error
     );
+
+    // Не змінюємо стан при помилці API.
+    return {
+      success: false,
+      error: "NEPTUN unavailable",
+    };
   }
 
-  const data = await response.json();
 
-  // ==========================================================
-  // ГОЛОВНА ЛОГІКА
-  // ==========================================================
-  //
-  // Нам НЕ важливо:
-  // yellow
-  // red
-  // reasons
-  //
-  // Нас цікавить тільки:
-  //
-  // Є Броварський район у raions → ТРИВОГА
-  // Немає Броварського району → ВІДБОЮ
-  //
-  // ==========================================================
+  // ----------------------------------------------------------
+  // Перевіряємо структуру відповіді
+  // ----------------------------------------------------------
 
-  const alert = (data.raions || []).find(
-    item => item.key === DISTRICT_KEY
+  if (!data || !Array.isArray(data.raions)) {
+    console.error(
+      "Invalid NEPTUN response: raions is missing"
+    );
+
+    return {
+      success: false,
+      error: "Invalid NEPTUN response",
+    };
+  }
+
+
+  // ----------------------------------------------------------
+  // Шукаємо Броварський район
+  // ----------------------------------------------------------
+
+  const alert = data.raions.find(
+    item => item?.key === DISTRICT_KEY
   );
 
+  // Не враховуємо level:
+  //
+  // yellow = тривога
+  // red    = тривога
+  //
+  // Важлива тільки наявність району.
+
   const isActive = Boolean(alert);
+
+
+  // ----------------------------------------------------------
+  // Отримуємо старий стан
+  // ----------------------------------------------------------
 
   const oldState = await getState(env);
 
   console.log(
-    "Current state:",
-    oldState
-  );
-
-  console.log(
-    "Current alert:",
-    isActive
+    JSON.stringify({
+      currentAlert: isActive,
+      previousState: oldState,
+    })
   );
 
 
@@ -203,13 +230,6 @@ async function checkAlert(env) {
   // ==========================================================
 
   if (oldState === null) {
-    // Якщо Worker стартував, коли тривога вже активна,
-    // просто запам'ятовуємо її стан.
-    //
-    // Повідомлення НЕ відправляємо,
-    // щоб після перезапуску не було помилкового
-    // повідомлення про початок тривоги.
-
     await saveState(env, {
       active: isActive,
       started_at: isActive
@@ -224,12 +244,16 @@ async function checkAlert(env) {
       `Initial state saved. Active: ${isActive}`
     );
 
-    return;
+    return {
+      success: true,
+      action: "initial_state",
+      active: isActive,
+    };
   }
 
 
   // ==========================================================
-  // ПОЧАТОК ТРИВОГИ
+  // ТРИВОГА ПОЧАЛАСЯ
   // ==========================================================
 
   if (!oldState.active && isActive) {
@@ -237,22 +261,37 @@ async function checkAlert(env) {
       alert?.since ||
       new Date().toISOString();
 
-    await sendTelegram(
-      env,
-      `🔴 <b>ПОВІТРЯНА ТРИВОГА</b>
+    try {
+      await sendTelegram(
+        env,
+        `🔴 <b>ПОВІТРЯНА ТРИВОГА</b>
 
 ⚠️ Пройдіть в укриття та перебувайте там до офіційного відбою.`
-    );
+      );
 
-    // Зберігаємо стан після успішної відправки
-    await saveState(env, {
-      active: true,
-      started_at: startedAt,
-    });
+      await saveState(env, {
+        active: true,
+        started_at: startedAt,
+      });
 
-    console.log("ALERT STARTED");
+      console.log("ALERT STARTED");
 
-    return;
+      return {
+        success: true,
+        action: "alert_started",
+      };
+
+    } catch (error) {
+      console.error(
+        "Failed to send ALERT STARTED:",
+        error
+      );
+
+      return {
+        success: false,
+        action: "telegram_error",
+      };
+    }
   }
 
 
@@ -261,23 +300,20 @@ async function checkAlert(env) {
   // ==========================================================
 
   if (oldState.active && isActive) {
-    // Нічого не відправляємо.
-    //
-    // yellow → red    = нічого
-    // red → yellow    = нічого
-    // yellow → yellow = нічого
-    // red → red       = нічого
+    // yellow -> red    = нічого
+    // red -> yellow    = нічого
+    // yellow -> yellow = нічого
+    // red -> red       = нічого
 
-    console.log(
-      "Alert is still active."
-    );
-
-    return;
+    return {
+      success: true,
+      action: "alert_still_active",
+    };
   }
 
 
   // ==========================================================
-  // ВІДБІЙ ТРИВОГИ
+  // ВІДБІЙ
   // ==========================================================
 
   if (oldState.active && !isActive) {
@@ -294,26 +330,49 @@ async function checkAlert(env) {
         )
       : "невідомо";
 
-    await sendTelegram(
-      env,
-      `🟢 <b>ВІДБІЙ ПОВІТРЯНОЇ ТРИВОГИ</b>
+
+    try {
+      await sendTelegram(
+        env,
+        `🟢 <b>ВІДБІЙ ПОВІТРЯНОЇ ТРИВОГИ</b>
 
 ⏱️ Небезпека тривала: <b>${duration}</b>`
-    );
+      );
 
-    // Після успішної відправки
-    // переводимо стан у "тривоги немає"
-    await saveState(env, {
-      active: false,
-      started_at: null,
-    });
+      await saveState(env, {
+        active: false,
+        started_at: null,
+      });
 
-    console.log(
-      `ALERT ENDED. Duration: ${duration}`
-    );
+      console.log(
+        `ALERT ENDED. Duration: ${duration}`
+      );
 
-    return;
+      return {
+        success: true,
+        action: "alert_ended",
+        duration,
+      };
+
+    } catch (error) {
+      console.error(
+        "Failed to send ALERT ENDED:",
+        error
+      );
+
+      return {
+        success: false,
+        action: "telegram_error",
+      };
+    }
   }
+
+
+  return {
+    success: true,
+    action: "no_change",
+    active: isActive,
+  };
 }
 
 
@@ -380,7 +439,17 @@ async function sendTelegram(env, text) {
     }),
   });
 
-  const result = await response.json();
+
+  let result;
+
+  try {
+    result = await response.json();
+  } catch {
+    throw new Error(
+      `Telegram returned invalid JSON (HTTP ${response.status})`
+    );
+  }
+
 
   if (!response.ok || !result.ok) {
     throw new Error(
@@ -388,12 +457,13 @@ async function sendTelegram(env, text) {
     );
   }
 
+
   return result;
 }
 
 
 // ============================================================
-// ФОРМАТУВАННЯ ТРИВАЛОСТІ
+// ТРИВАЛІСТЬ
 // ============================================================
 
 function formatDuration(milliseconds) {
@@ -419,11 +489,9 @@ function formatDuration(milliseconds) {
     return `${minutes} хв`;
   }
 
-
   if (minutes === 0) {
     return `${hours} год`;
   }
-
 
   return `${hours} год ${minutes} хв`;
 }
