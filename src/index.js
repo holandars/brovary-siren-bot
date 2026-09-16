@@ -1,1075 +1,452 @@
-// ============================================================
-// BROVARY AIR RAID ALERT BOT
-// Cloudflare Worker + Alerts.in.ua + Telegram
-// ============================================================
-
-
-// ============================================================
-// CONFIG
-// ============================================================
-
-const ALERT_API =
-  "https://api.alerts.in.ua/v1/alerts/active.json";
-
-const DISTRICT_NAME =
-  "Броварський район";
-
-const DISTRICT_TYPE =
-  "raion";
-
-const ALERT_TYPE =
-  "air_raid";
-
-const STATE_KEY =
-  "brovary_alert_state";
-
-const TELEGRAM_CHAT_ID =
-  "@brovary_tryvoha";
-
-// Alerts.in.ua: soft limit 8–10 req/min.
-// Використовуємо 10 запитів/хв = один запит кожні 6 секунд.
-const CHECK_INTERVAL_MS =
-  6000;
-
-const CHECKS_PER_RUN =
-  10;
-
-
-// ============================================================
-// CLOUDFLARE WORKER
-// ============================================================
+const BROVARY_RAION_UID = "79";
+const KV_KEY = "brovary_alert_state";
 
 export default {
-
-  // ----------------------------------------------------------
-  // HTTP
-  // ----------------------------------------------------------
+  async scheduled(event, env, ctx) {
+    ctx.waitUntil(checkAlerts(env));
+  },
 
   async fetch(request, env) {
-
-    const url =
-      new URL(request.url);
-
-
-    // --------------------------------------------------------
-    // /test
-    // --------------------------------------------------------
-
-    if (url.pathname === "/test") {
-
-      try {
-
-        await sendTelegram(
-          env,
-          "🟢 Тестове повідомлення від бота."
-        );
-
-        return json({
-          success: true,
-          message:
-            "Telegram повідомлення відправлено."
-        });
-
-      } catch (error) {
-
-        return json(
-          {
-            success: false,
-            error: error.message
-          },
-          500
-        );
-      }
-    }
-
-
-    // --------------------------------------------------------
-    // /check
-    //
-    // ТІЛЬКИ діагностика.
-    // НЕ відправляє Telegram.
-    // НЕ змінює KV.
-    // --------------------------------------------------------
+    const url = new URL(request.url);
 
     if (url.pathname === "/check") {
+      const result = await checkAlerts(env);
 
-      try {
-
-        const result =
-          await debugCheck(env);
-
-        return json(result);
-
-      } catch (error) {
-
-        console.error(
-          "Debug check error:",
-          error
-        );
-
-        return json(
-          {
-            success: false,
-            error: error.message
-          },
-          500
-        );
-      }
+      return new Response(
+        JSON.stringify(result, null, 2),
+        {
+          headers: {
+            "Content-Type": "application/json; charset=utf-8"
+          }
+        }
+      );
     }
-
-
-    // --------------------------------------------------------
-    // /status
-    //
-    // Показує стан, який зберігається в KV.
-    // --------------------------------------------------------
-
-    if (url.pathname === "/status") {
-
-      const state =
-        await getState(env);
-
-      return json({
-        success: true,
-        state
-      });
-    }
-
-
-    // --------------------------------------------------------
-    // DEFAULT
-    // --------------------------------------------------------
 
     return new Response(
-      "Brovary Alert Worker is running.",
+      "Alerts monitor is running.",
       {
-        status: 200,
         headers: {
-          "Content-Type":
-            "text/plain; charset=utf-8"
+          "Content-Type": "text/plain; charset=utf-8"
         }
       }
     );
-  },
-
-
-  // ----------------------------------------------------------
-  // CRON
-  // ----------------------------------------------------------
-
-  async scheduled(event, env, ctx) {
-
-    ctx.waitUntil(
-      runChecks(env)
-    );
   }
-
 };
 
 
-// ============================================================
-// MAIN CHECK LOOP
-// ============================================================
+// =====================================================
+// ПЕРЕВІРКА ALERTS.IN.UA
+// =====================================================
 
-async function runChecks(env) {
-
-  for (
-    let i = 0;
-    i < CHECKS_PER_RUN;
-    i++
-  ) {
-
-    try {
-
-      await checkAlert(env);
-
-    } catch (error) {
-
-      console.error(
-        `Check ${i + 1} error:`,
-        error
-      );
+async function checkAlerts(env) {
+  try {
+    if (!env.ALERTS_API_TOKEN) {
+      throw new Error("ALERTS_API_TOKEN не налаштований");
     }
 
-
-    // Не чекаємо після останньої перевірки.
-    if (
-      i <
-      CHECKS_PER_RUN - 1
-    ) {
-
-      await sleep(
-        CHECK_INTERVAL_MS
-      );
+    if (!env.BROVARY_ALERT_KV) {
+      throw new Error("BROVARY_ALERT_KV не підключений");
     }
-  }
-}
 
-
-// ============================================================
-// ONE ALERT CHECK
-// ============================================================
-
-async function checkAlert(env) {
-
-  const state =
-    await getState(env);
-
-
-  const headers =
-    new Headers();
-
-  headers.set(
-    "Accept",
-    "application/json"
-  );
-
-  headers.set(
-    "Authorization",
-    `Bearer ${env.ALERTS_API_TOKEN}`
-  );
-
-  headers.set(
-    "User-Agent",
-    "BrovaryAlertBot/1.0"
-  );
-
-
-  // ----------------------------------------------------------
-  // Last-Modified cache
-  // ----------------------------------------------------------
-
-  if (
-    state &&
-    state.lastModified
-  ) {
-
-    headers.set(
-      "If-Modified-Since",
-      state.lastModified
-    );
-  }
-
-
-  // ----------------------------------------------------------
-  // REQUEST
-  // ----------------------------------------------------------
-
-  const response =
-    await fetch(
-      ALERT_API,
+    // Отримуємо активні тривоги
+    const response = await fetch(
+      "https://api.alerts.in.ua/v1/alerts/active.json",
       {
         method: "GET",
-        headers
+        headers: {
+          "Authorization": `Bearer ${env.ALERTS_API_TOKEN}`
+        }
       }
     );
 
+    if (!response.ok) {
+      const errorText = await response.text();
 
-  // ----------------------------------------------------------
-  // 304
-  // Дані не змінилися.
-  // Нічого робити не потрібно.
-  // ----------------------------------------------------------
+      return {
+        ok: false,
+        api_status: response.status,
+        error: errorText || "Alerts.in.ua API error"
+      };
+    }
 
-  if (
-    response.status === 304
-  ) {
+    const data = await response.json();
 
-    console.log(
-      "Alerts.in.ua: 304 Not Modified"
+    const alerts = Array.isArray(data.alerts)
+      ? data.alerts
+      : [];
+
+    // =================================================
+    // ТІЛЬКИ UID 79
+    // =================================================
+
+    const brovaryAlerts = alerts.filter(
+      alert =>
+        String(alert.location_uid) === BROVARY_RAION_UID &&
+        alert.alert_type === "air_raid"
     );
 
-    return {
-      changed: false,
-      reason: "not_modified"
-    };
-  }
+    // Якщо одночасно прийде декілька записів,
+    // беремо перший повітряний alert
+    const currentAlert = brovaryAlerts[0] || null;
+
+    // =================================================
+    // ПОПЕРЕДНІЙ СТАН
+    // =================================================
+
+    const saved =
+      await env.BROVARY_ALERT_KV.get(
+        KV_KEY,
+        "json"
+      );
 
 
-  // ----------------------------------------------------------
-  // API ERROR
-  // ----------------------------------------------------------
+    // =================================================
+    // НЕМАЄ АКТИВНОЇ ТРИВОГИ
+    // =================================================
 
-  if (!response.ok) {
+    if (!currentAlert) {
 
-    const body =
-      await response.text();
+      // Якщо раніше тривога була активною
+      if (saved && saved.active) {
 
-    console.error(
-      "Alerts.in.ua error:",
-      response.status,
-      body
-    );
+        const startedAt =
+          new Date(saved.startedAt);
 
-    // KV НЕ змінюємо.
-    return {
-      changed: false,
-      reason: "api_error",
-      status: response.status
-    };
-  }
+        const finishedAt =
+          new Date();
 
+        const durationMs =
+          finishedAt.getTime() -
+          startedAt.getTime();
 
-  // ----------------------------------------------------------
-  // JSON
-  // ----------------------------------------------------------
+        const duration =
+          formatDuration(durationMs);
 
-  const data =
-    await response.json();
+        await sendTelegram(
+          env,
+          `🟢 <b>ВІДБІЙ ТРИВОГИ</b>\n\n` +
+          `⏱ Тривалість: <b>${duration}</b>`
+        );
 
+        await env.BROVARY_ALERT_KV.put(
+          KV_KEY,
+          JSON.stringify({
+            active: false,
+            level: saved.level,
+            startedAt: saved.startedAt,
+            finishedAt: finishedAt.toISOString()
+          })
+        );
 
-  if (
-    !data ||
-    !Array.isArray(data.alerts)
-  ) {
-
-    throw new Error(
-      "Alerts.in.ua: unexpected API response"
-    );
-  }
-
-
-  // ----------------------------------------------------------
-  // Last-Modified
-  // ----------------------------------------------------------
-
-  const lastModified =
-    response.headers.get(
-      "Last-Modified"
-    );
-
-
-  // ----------------------------------------------------------
-  // FIND BROVARY DISTRICT
-  // ----------------------------------------------------------
-
-  const districtAlert =
-    data.alerts.find(
-      item =>
-        item?.location_type ===
-          DISTRICT_TYPE &&
-
-        item?.location_title ===
-          DISTRICT_NAME &&
-
-        item?.alert_type ===
-          ALERT_TYPE
-    );
-
-
-  const active =
-    Boolean(districtAlert);
-
-
-  console.log(
-    "Brovary district:",
-    active
-      ? "ACTIVE"
-      : "NO ALERT"
-  );
-
-
-  // ----------------------------------------------------------
-  // FIRST RUN
-  //
-  // Якщо KV ще порожня —
-  // синхронізуємо стан без Telegram.
-  // ----------------------------------------------------------
-
-  if (!state) {
-
-    await saveState(
-      env,
-      {
-        active,
-        startedAt:
-          active &&
-          districtAlert?.started_at
-            ? districtAlert.started_at
-            : null,
-        lastModified
+        return {
+          ok: true,
+          state: "finished",
+          duration,
+          startedAt: saved.startedAt,
+          finishedAt: finishedAt.toISOString()
+        };
       }
-    );
 
-    console.log(
-      "Initial state synchronized:",
-      active
-    );
-
-    return {
-      changed: false,
-      reason: "initial_sync",
-      active
-    };
-  }
-
-
-  // ----------------------------------------------------------
-  // ACTIVE -> ACTIVE
-  // ----------------------------------------------------------
-
-  if (
-    state.active &&
-    active
-  ) {
-
-    // Оновлюємо Last-Modified,
-    // якщо API його надіслав.
-
-    if (
-      lastModified &&
-      lastModified !==
-        state.lastModified
-    ) {
-
-      await saveState(
-        env,
-        {
-          ...state,
-          lastModified
-        }
-      );
+      return {
+        ok: true,
+        state: "no_alert"
+      };
     }
 
-    return {
-      changed: false,
-      reason: "alert_still_active"
-    };
-  }
+
+    // =================================================
+    // Є АКТИВНА ТРИВОГА
+    // =================================================
+
+    const level =
+      currentAlert.alert_level === "red"
+        ? "red"
+        : "yellow";
 
 
-  // ----------------------------------------------------------
-  // NO ALERT -> NO ALERT
-  // ----------------------------------------------------------
+    // =================================================
+    // ЧАС ПОЧАТКУ
+    // =================================================
 
-  if (
-    !state.active &&
-    !active
-  ) {
+    /*
+      Alerts.in.ua передає started_at.
+      Саме його використовуємо для початку всієї
+      тривоги.
 
-    if (
-      lastModified &&
-      lastModified !==
-        state.lastModified
-    ) {
+      Якщо з якихось причин started_at відсутній,
+      беремо поточний час.
+    */
 
-      await saveState(
-        env,
-        {
-          ...state,
-          lastModified
-        }
-      );
-    }
-
-    return {
-      changed: false,
-      reason: "no_alert"
-    };
-  }
-
-
-  // ==========================================================
-  // ALERT STARTED
-  // ==========================================================
-
-  if (
-    !state.active &&
-    active
-  ) {
-
-    const startedAt =
-      districtAlert?.started_at ||
+    const apiStartedAt =
+      currentAlert.started_at ||
       new Date().toISOString();
 
 
-    const message =
-      [
-        "🚨 <b>ПОВІТРЯНА ТРИВОГА</b>",
-        "",
-        "📍 <b>Броварський район</b>",
-        "",
-        `🕐 Початок: ${formatDateTime(startedAt)}`
-      ].join("\n");
+    // =================================================
+    // НОВА ТРИВОГА
+    // =================================================
+
+    if (!saved || !saved.active) {
+
+      await env.BROVARY_ALERT_KV.put(
+        KV_KEY,
+        JSON.stringify({
+          active: true,
+          level: level,
+          startedAt: apiStartedAt
+        })
+      );
 
 
-    // Спочатку Telegram.
-    // Якщо Telegram не відправився —
-    // стан НЕ переводимо в active.
+      // НОВА ЧЕРВОНА
+      if (level === "red") {
 
-    await sendTelegram(
-      env,
-      message
-    );
-
-
-    await saveState(
-      env,
-      {
-        active: true,
-        startedAt,
-        lastModified
-      }
-    );
-
-
-    console.log(
-      "ALERT STARTED"
-    );
-
-    return {
-      changed: true,
-      event: "started"
-    };
-  }
-
-
-  // ==========================================================
-  // ALERT ENDED
-  // ==========================================================
-
-  if (
-    state.active &&
-    !active
-  ) {
-
-    const endedAt =
-      new Date();
-
-
-    let durationText =
-      "невідомо";
-
-
-    if (
-      state.startedAt
-    ) {
-
-      durationText =
-        formatDuration(
-          endedAt.getTime() -
-          new Date(
-            state.startedAt
-          ).getTime()
+        await sendTelegram(
+          env,
+          `🔴 <b>ЧЕРВОНА ТРИВОГА</b>`
         );
+
+      }
+
+      // НОВА ЖОВТА
+      else {
+
+        await sendTelegram(
+          env,
+          `🟡 <b>ЖОВТА ТРИВОГА</b>`
+        );
+
+      }
+
+
+      return {
+        ok: true,
+        state: "started",
+        level: level,
+        startedAt: apiStartedAt
+      };
     }
 
 
-    const message =
-      [
-        "🟢 <b>ВІДБІЙ ПОВІТРЯНОЇ ТРИВОГИ</b>",
-        "",
-        "📍 <b>Броварський район</b>",
-        "",
-        `🕐 Відбій: ${formatDateTime(endedAt)}`,
-        `⏱ Тривалість: ${durationText}`
-      ].join("\n");
+    // =================================================
+    // ЗМІНА РІВНЯ ТРИВОГИ
+    // =================================================
+
+    if (saved.level !== level) {
+
+      /*
+        ВАЖЛИВО:
+
+        startedAt НЕ змінюємо.
+
+        Наприклад:
+
+        19:00 — жовта
+        19:30 — червона
+        20:00 — жовта
+        20:10 — відбій
+
+        Тривалість буде рахуватися
+        від 19:00 до 20:10.
+      */
+
+      await env.BROVARY_ALERT_KV.put(
+        KV_KEY,
+        JSON.stringify({
+          ...saved,
+          active: true,
+          level: level
+        })
+      );
 
 
-    await sendTelegram(
-      env,
-      message
-    );
+      // =================================================
+      // ЖОВТА → ЧЕРВОНА
+      // =================================================
 
+      if (level === "red") {
 
-    await saveState(
-      env,
-      {
-        active: false,
-        startedAt: null,
-        lastModified
+        await sendTelegram(
+          env,
+          `🔴 <b>ЧЕРВОНА ТРИВОГА</b>`
+        );
+
+        return {
+          ok: true,
+          state: "level_changed",
+          from: saved.level,
+          to: "red",
+          startedAt: saved.startedAt
+        };
       }
-    );
 
 
-    console.log(
-      "ALERT ENDED"
-    );
+      // =================================================
+      // ЧЕРВОНА → ЖОВТА
+      // =================================================
 
+      if (level === "yellow") {
+
+        await sendTelegram(
+          env,
+          `🟡 <b>ЖОВТА ТРИВОГА</b>`
+        );
+
+        return {
+          ok: true,
+          state: "level_changed",
+          from: saved.level,
+          to: "yellow",
+          startedAt: saved.startedAt
+        };
+      }
+    }
+
+
+    // =================================================
+    // ТРИВОГА ПРОДОВЖУЄТЬСЯ
+    // =================================================
 
     return {
-      changed: true,
-      event: "ended"
+      ok: true,
+      state: "active",
+      level: level,
+      startedAt: saved.startedAt
     };
+
+
+  } catch (error) {
+
+    return {
+      ok: false,
+      error: error.message
+    };
+
   }
-
-
-  return {
-    changed: false,
-    reason: "unknown"
-  };
 }
 
 
-// ============================================================
-// DEBUG /check
-//
-// ВАЖЛИВО:
-// - Telegram НЕ відправляє
-// - KV НЕ змінює
-// - тільки читає Alerts.in.ua
-// ============================================================
-
-async function debugCheck(env) {
-
-  if (
-    !env.ALERTS_API_TOKEN
-  ) {
-
-    throw new Error(
-      "ALERTS_API_TOKEN is not configured"
-    );
-  }
-
-
-  const response =
-    await fetch(
-      ALERT_API,
-      {
-        method: "GET",
-
-        headers: {
-          "Accept":
-            "application/json",
-
-          "Authorization":
-            `Bearer ${env.ALERTS_API_TOKEN}`,
-
-          "User-Agent":
-            "BrovaryAlertBot/1.0"
-        }
-      }
-    );
-
-
-  const lastModified =
-    response.headers.get(
-      "Last-Modified"
-    );
-
-
-  // ----------------------------------------------------------
-  // ERROR
-  // ----------------------------------------------------------
-
-  if (!response.ok) {
-
-    const body =
-      await response.text();
-
-    return {
-      success: false,
-      http_status:
-        response.status,
-      last_modified:
-        lastModified,
-      error:
-        body
-    };
-  }
-
-
-  // ----------------------------------------------------------
-  // DATA
-  // ----------------------------------------------------------
-
-  const data =
-    await response.json();
-
-
-  if (
-    !data ||
-    !Array.isArray(data.alerts)
-  ) {
-
-    return {
-      success: false,
-      http_status:
-        response.status,
-      error:
-        "Unexpected API response",
-      response:
-        data
-    };
-  }
-
-
-  // ----------------------------------------------------------
-  // BROVARY
-  // ----------------------------------------------------------
-
-  const districtAlert =
-    data.alerts.find(
-      item =>
-        item?.location_type ===
-          DISTRICT_TYPE &&
-
-        item?.location_title ===
-          DISTRICT_NAME
-    );
-
-
-  // ----------------------------------------------------------
-  // AIR RAID
-  // ----------------------------------------------------------
-
-  const airRaid =
-    data.alerts.find(
-      item =>
-        item?.location_type ===
-          DISTRICT_TYPE &&
-
-        item?.location_title ===
-          DISTRICT_NAME &&
-
-        item?.alert_type ===
-          ALERT_TYPE
-    );
-
-
-  return {
-
-    success: true,
-
-    http_status:
-      response.status,
-
-    last_modified:
-      lastModified,
-
-    alerts_count:
-      data.alerts.length,
-
-    district_found:
-      Boolean(districtAlert),
-
-    air_raid_active:
-      Boolean(airRaid),
-
-    district:
-      districtAlert
-        ? {
-            id:
-              districtAlert.id,
-
-            location_uid:
-              districtAlert.location_uid,
-
-            location_title:
-              districtAlert.location_title,
-
-            location_type:
-              districtAlert.location_type,
-
-            alert_type:
-              districtAlert.alert_type,
-
-            alert_level:
-              districtAlert.alert_level,
-
-            started_at:
-              districtAlert.started_at,
-
-            updated_at:
-              districtAlert.updated_at,
-
-            finished_at:
-              districtAlert.finished_at,
-
-            threats:
-              districtAlert.threats || []
-          }
-        : null
-  };
-}
-
-
-// ============================================================
+// =====================================================
 // TELEGRAM
-// ============================================================
+// =====================================================
 
-async function sendTelegram(
-  env,
-  text
-) {
+async function sendTelegram(env, message) {
 
-  if (
-    !env.BOT_TOKEN
-  ) {
-
+  if (!env.BOT_TOKEN) {
     throw new Error(
-      "BOT_TOKEN is not configured"
+      "BOT_TOKEN не налаштований"
+    );
+  }
+
+  if (!env.CHAT_ID) {
+    throw new Error(
+      "CHAT_ID не налаштований"
     );
   }
 
 
-  const url =
+  const telegramUrl =
     `https://api.telegram.org/bot${env.BOT_TOKEN}/sendMessage`;
 
 
-  const response =
-    await fetch(
-      url,
-      {
-        method: "POST",
+  const response = await fetch(
+    telegramUrl,
+    {
+      method: "POST",
 
-        headers: {
-          "Content-Type":
-            "application/json"
-        },
+      headers: {
+        "Content-Type": "application/json"
+      },
 
-        body: JSON.stringify({
-          chat_id:
-            TELEGRAM_CHAT_ID,
-
-          text,
-
-          parse_mode:
-            "HTML",
-
-          disable_web_page_preview:
-            true
-        })
-      }
-    );
+      body: JSON.stringify({
+        chat_id: env.CHAT_ID,
+        text: message,
+        parse_mode: "HTML",
+        disable_web_page_preview: true
+      })
+    }
+  );
 
 
   if (!response.ok) {
 
-    const body =
+    const errorText =
       await response.text();
 
     throw new Error(
-      `Telegram API ${response.status}: ${body}`
+      `Telegram API ${response.status}: ${errorText}`
     );
   }
+}
 
 
-  const result =
-    await response.json();
+// =====================================================
+// ФОРМАТУВАННЯ ТРИВАЛОСТІ
+// =====================================================
 
+function formatDuration(ms) {
 
-  if (
-    !result.ok
-  ) {
-
-    throw new Error(
-      `Telegram error: ${JSON.stringify(result)}`
-    );
+  if (!Number.isFinite(ms) || ms < 0) {
+    return "невідомо";
   }
 
-
-  return result;
-}
-
-
-// ============================================================
-// KV
-// ============================================================
-
-async function getState(env) {
-
-  if (
-    !env.BROVARY_ALERT_KV
-  ) {
-
-    throw new Error(
-      "BROVARY_ALERT_KV is not configured"
-    );
-  }
-
-
-  return await env.BROVARY_ALERT_KV.get(
-    STATE_KEY,
-    {
-      type: "json"
-    }
-  );
-}
-
-
-async function saveState(
-  env,
-  state
-) {
-
-  if (
-    !env.BROVARY_ALERT_KV
-  ) {
-
-    throw new Error(
-      "BROVARY_ALERT_KV is not configured"
-    );
-  }
-
-
-  await env.BROVARY_ALERT_KV.put(
-    STATE_KEY,
-    JSON.stringify(state)
-  );
-}
-
-
-// ============================================================
-// HELPERS
-// ============================================================
-
-function sleep(ms) {
-
-  return new Promise(
-    resolve =>
-      setTimeout(
-        resolve,
-        ms
-      )
-  );
-}
-
-
-function json(
-  data,
-  status = 200
-) {
-
-  return new Response(
-    JSON.stringify(
-      data,
-      null,
-      2
-    ),
-    {
-      status,
-
-      headers: {
-        "Content-Type":
-          "application/json; charset=utf-8"
-      }
-    }
-  );
-}
-
-
-function formatDateTime(
-  value
-) {
-
-  const date =
-    new Date(value);
-
-
-  if (
-    Number.isNaN(
-      date.getTime()
-    )
-  ) {
-
-    return String(value);
-  }
-
-
-  return date.toLocaleString(
-    "uk-UA",
-    {
-      timeZone:
-        "Europe/Kyiv",
-
-      year: "numeric",
-      month: "2-digit",
-      day: "2-digit",
-
-      hour: "2-digit",
-      minute: "2-digit",
-      second: "2-digit"
-    }
-  );
-}
-
-
-function formatDuration(
-  milliseconds
-) {
 
   const totalSeconds =
-    Math.max(
-      0,
-      Math.floor(
-        milliseconds / 1000
-      )
+    Math.floor(ms / 1000);
+
+
+  const hours =
+    Math.floor(
+      totalSeconds / 3600
     );
 
 
   const minutes =
     Math.floor(
-      totalSeconds / 60
+      (totalSeconds % 3600) / 60
     );
 
 
-  const hours =
-    Math.floor(
-      minutes / 60
-    );
+  const seconds =
+    totalSeconds % 60;
 
 
-  const remainingMinutes =
-    minutes % 60;
+  const result = [];
 
+
+  if (hours > 0) {
+    result.push(`${hours} год`);
+  }
+
+
+  if (minutes > 0) {
+    result.push(`${minutes} хв`);
+  }
+
+
+  /*
+    Секунди показуємо тільки якщо
+    тривога менше хвилини.
+
+    Тобто:
+
+    10 сек
+    1 хв
+    1 год 10 хв
+  */
 
   if (
-    hours > 0
+    result.length === 0 &&
+    seconds > 0
   ) {
-
-    if (
-      remainingMinutes > 0
-    ) {
-
-      return `${hours} год ${remainingMinutes} хв`;
-
-    }
-
-    return `${hours} год`;
+    result.push(`${seconds} сек`);
   }
 
 
-  return `${minutes} хв`;
-}export default {
-  async fetch(request, env) {
-    try {
-      const response = await fetch(
-        "https://api.alerts.in.ua/v1/alerts/active.json",
-        {
-          headers: {
-            "Authorization": `Bearer ${env.ALERTS_API_TOKEN}`
-          }
-        }
-      );
-
-      const text = await response.text();
-
-      return new Response(
-        JSON.stringify({
-          alerts_api_status: response.status,
-          alerts_api_ok: response.ok,
-          response: text
-        }, null, 2),
-        {
-          headers: {
-            "Content-Type": "application/json; charset=utf-8"
-          }
-        }
-      );
-
-    } catch (error) {
-      return new Response(
-        JSON.stringify({
-          error: error.message
-        }, null, 2),
-        {
-          status: 500,
-          headers: {
-            "Content-Type": "application/json; charset=utf-8"
-          }
-        }
-      );
-    }
+  if (result.length === 0) {
+    result.push("0 сек");
   }
-};
+
+
+  return result.join(" ");
+}
