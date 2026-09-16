@@ -190,7 +190,8 @@ async function checkAlerts(env) {
           env,
           `🟢 <b>ВІДБІЙ ПОВІТРЯНОЇ НЕБЕЗПЕКИ</b>${
             duration
-              ? `\n⏱ Небезпека тривала: ${duration}`
+              
+            ? `\n⏱ Небезпека тривала: ${duration}`
               : ""
           }`
         );
