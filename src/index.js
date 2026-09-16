@@ -2,8 +2,10 @@ const BROVARY_RAION_UID = "79";
 
 const KV_KEY = "brovary_alert_state";
 
-const CHECKS_PER_RUN = 6;
-const CHECK_INTERVAL_MS = 10_000;
+// Alerts.in.ua: максимум 12 запитів/хв.
+// 11 перевірок за Cron із інтервалом ~5.5 сек дають запас.
+const CHECKS_PER_RUN = 11;
+const CHECK_INTERVAL_MS = 5_500;
 
 const ALERTS_API_URL =
   "https://api.alerts.in.ua/v1/alerts/active.json";
@@ -33,6 +35,10 @@ export default {
 };
 
 async function runChecks(env) {
+  console.log(
+    `[${new Date().toISOString()}] START CRON CHECK LOOP`
+  );
+
   for (let i = 1; i <= CHECKS_PER_RUN; i++) {
     const started = Date.now();
 
@@ -52,17 +58,24 @@ async function runChecks(env) {
       console.error(
         `[${new Date().toISOString()}] CHECK_ERROR message=${getErrorMessage(
           error
-        )} stack=${error?.stack || "no-stack"}`
+        )}`
       );
     }
 
     if (i < CHECKS_PER_RUN) {
       const elapsed = Date.now() - started;
-      const waitTime = Math.max(0, CHECK_INTERVAL_MS - elapsed);
+      const waitTime = Math.max(
+        0,
+        CHECK_INTERVAL_MS - elapsed
+      );
 
       await sleep(waitTime);
     }
   }
+
+  console.log(
+    `[${new Date().toISOString()}] END CRON CHECK LOOP`
+  );
 }
 
 async function checkAlerts(env) {
@@ -99,7 +112,10 @@ async function checkAlerts(env) {
 
     if (!response.ok) {
       throw new Error(
-        `Alerts.in.ua HTTP ${response.status}: ${responseText.slice(0, 500)}`
+        `Alerts.in.ua HTTP ${response.status}: ${responseText.slice(
+          0,
+          500
+        )}`
       );
     }
 
@@ -109,7 +125,9 @@ async function checkAlerts(env) {
       data = JSON.parse(responseText);
     } catch (error) {
       throw new Error(
-        `Не вдалося розібрати JSON Alerts.in.ua: ${getErrorMessage(error)}`
+        `Не вдалося розібрати JSON Alerts.in.ua: ${getErrorMessage(
+          error
+        )}`
       );
     }
 
@@ -161,13 +179,17 @@ async function checkAlerts(env) {
           : null;
 
         const duration = startedAt
-          ? formatDuration(Date.now() - startedAt.getTime())
+          ? formatDuration(
+              Date.now() - startedAt.getTime()
+            )
           : null;
 
         await sendTelegram(
           env,
           `🟢 <b>ВІДБІЙ ТРИВОГИ</b>${
-            duration ? `\n⏱ Тривалість: ${duration}` : ""
+            duration
+              ? `\n⏱ Тривалість: ${duration}`
+              : ""
           }`
         );
 
@@ -198,18 +220,22 @@ async function checkAlerts(env) {
     }
 
     /*
-     * Визначення рівня тривоги
+     * Визначення рівня
      */
 
     const level =
-      String(brovaryAlert.alert_level || "").toLowerCase();
+      String(
+        brovaryAlert.alert_level || ""
+      ).toLowerCase();
 
     let telegramMessage;
 
     if (level === "red") {
-      telegramMessage = "🔴 <b>ЧЕРВОНА ТРИВОГА</b>";
+      telegramMessage =
+        "🔴 <b>ЧЕРВОНА ТРИВОГА</b>";
     } else {
-      telegramMessage = "🟡 <b>ЖОВТА ТРИВОГА</b>";
+      telegramMessage =
+        "🟡 <b>ЖОВТА ТРИВОГА</b>";
     }
 
     /*
@@ -221,7 +247,10 @@ async function checkAlerts(env) {
         brovaryAlert.started_at ||
         new Date().toISOString();
 
-      await sendTelegram(env, telegramMessage);
+      await sendTelegram(
+        env,
+        telegramMessage
+      );
 
       await env.ALERT_STATE.put(
         KV_KEY,
@@ -245,11 +274,14 @@ async function checkAlerts(env) {
     }
 
     /*
-     * Зміна рівня під час активної тривоги
+     * Зміна рівня
      */
 
     if (saved.level !== level) {
-      await sendTelegram(env, telegramMessage);
+      await sendTelegram(
+        env,
+        telegramMessage
+      );
 
       await env.ALERT_STATE.put(
         KV_KEY,
@@ -292,7 +324,7 @@ async function checkAlerts(env) {
     console.error(
       `[${new Date().toISOString()}] CHECK_ERROR message=${getErrorMessage(
         error
-      )} stack=${error?.stack || "no-stack"}`
+      )}`
     );
 
     return {
@@ -307,20 +339,24 @@ async function sendTelegram(env, message) {
   const telegramUrl =
     `https://api.telegram.org/bot${env.BOT_TOKEN}/sendMessage`;
 
-  const response = await fetch(telegramUrl, {
-    method: "POST",
-    headers: {
-      "content-type": "application/json",
-    },
-    body: JSON.stringify({
-      chat_id: env.CHAT_ID,
-      text: message,
-      parse_mode: "HTML",
-      disable_web_page_preview: true,
-    }),
-  });
+  const response = await fetch(
+    telegramUrl,
+    {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+      },
+      body: JSON.stringify({
+        chat_id: env.CHAT_ID,
+        text: message,
+        parse_mode: "HTML",
+        disable_web_page_preview: true,
+      }),
+    }
+  );
 
-  const responseText = await response.text();
+  const responseText =
+    await response.text();
 
   console.log(
     `[${new Date().toISOString()}] TELEGRAM HTTP ${response.status}, body=${responseText.slice(
@@ -331,7 +367,10 @@ async function sendTelegram(env, message) {
 
   if (!response.ok) {
     throw new Error(
-      `Telegram HTTP ${response.status}: ${responseText.slice(0, 500)}`
+      `Telegram HTTP ${response.status}: ${responseText.slice(
+        0,
+        500
+      )}`
     );
   }
 
@@ -341,13 +380,17 @@ async function sendTelegram(env, message) {
     data = JSON.parse(responseText);
   } catch (error) {
     throw new Error(
-      `Telegram повернув некоректний JSON: ${getErrorMessage(error)}`
+      `Telegram повернув некоректний JSON: ${getErrorMessage(
+        error
+      )}`
     );
   }
 
   if (!data.ok) {
     throw new Error(
-      `Telegram API error: ${data.description || "unknown error"}`
+      `Telegram API error: ${
+        data.description || "unknown error"
+      }`
     );
   }
 
@@ -355,15 +398,26 @@ async function sendTelegram(env, message) {
 }
 
 function formatDuration(milliseconds) {
-  if (!Number.isFinite(milliseconds) || milliseconds < 0) {
+  if (
+    !Number.isFinite(milliseconds) ||
+    milliseconds < 0
+  ) {
     return null;
   }
 
-  const totalSeconds = Math.floor(milliseconds / 1000);
+  const totalSeconds =
+    Math.floor(milliseconds / 1000);
 
-  const hours = Math.floor(totalSeconds / 3600);
-  const minutes = Math.floor((totalSeconds % 3600) / 60);
-  const seconds = totalSeconds % 60;
+  const hours =
+    Math.floor(totalSeconds / 3600);
+
+  const minutes =
+    Math.floor(
+      (totalSeconds % 3600) / 60
+    );
+
+  const seconds =
+    totalSeconds % 60;
 
   const parts = [];
 
