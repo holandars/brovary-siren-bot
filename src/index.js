@@ -1,4 +1,5 @@
 const BROVARY_RAION_UID = "79";
+
 const KV_KEY = "brovary_alert_state";
 
 const CHECKS_PER_RUN = 6;
@@ -9,816 +10,413 @@ const ALERTS_API_URL =
 
 export default {
   async scheduled(event, env, ctx) {
-    await runChecks(env);
+    ctx.waitUntil(runChecks(env));
   },
 
   async fetch(request, env) {
     const url = new URL(request.url);
 
-    // Ручна перевірка:
-    // https://твій-worker.workers.dev/check
     if (url.pathname === "/check") {
-      const result = await checkAlerts(env);
-
-      return new Response(
-        JSON.stringify(result, null, 2),
-        {
-          status: result.ok ? 200 : 500,
-          headers: {
-            "Content-Type":
-              "application/json; charset=utf-8"
-          }
-        }
-      );
+      return Response.json(await checkAlerts(env));
     }
 
     return new Response(
-      "Brovary siren bot is running.",
+      "Brovary Siren Bot is running.\nUse /check for diagnostics.",
       {
+        status: 200,
         headers: {
-          "Content-Type":
-            "text/plain; charset=utf-8"
-        }
+          "content-type": "text/plain; charset=utf-8",
+        },
       }
     );
-  }
+  },
 };
 
-
-/*
-==================================================
-6 ПЕРЕВІРОК НА ОДИН CRON-ЗАПУСК
-Кожна перевірка через 10 секунд
-==================================================
-*/
-
 async function runChecks(env) {
-  for (let i = 0; i < CHECKS_PER_RUN; i++) {
-
-    const now =
-      new Date().toISOString();
+  for (let i = 1; i <= CHECKS_PER_RUN; i++) {
+    const started = Date.now();
 
     console.log(
-      `[${now}] ALERT CHECK ${i + 1}/${CHECKS_PER_RUN}`
+      `[${new Date().toISOString()}] ALERT CHECK ${i}/${CHECKS_PER_RUN}`
     );
 
     try {
-      const result =
-        await checkAlerts(env);
+      const result = await checkAlerts(env);
 
       console.log(
-        `[${new Date().toISOString()}] CHECK RESULT ${JSON.stringify(result)}`
+        `[${new Date().toISOString()}] CHECK RESULT ${JSON.stringify(
+          result
+        )}`
       );
-
     } catch (error) {
-
       console.error(
-        `CHECK_ERROR message=${getErrorMessage(error)}`
+        `[${new Date().toISOString()}] CHECK_ERROR message=${getErrorMessage(
+          error
+        )} stack=${error?.stack || "no-stack"}`
       );
-
     }
 
-    if (i < CHECKS_PER_RUN - 1) {
-      await sleep(CHECK_INTERVAL_MS);
+    if (i < CHECKS_PER_RUN) {
+      const elapsed = Date.now() - started;
+      const waitTime = Math.max(0, CHECK_INTERVAL_MS - elapsed);
+
+      await sleep(waitTime);
     }
   }
 }
 
-
-/*
-==================================================
-ОСНОВНА ПЕРЕВІРКА ALERTS.IN.UA
-==================================================
-*/
-
 async function checkAlerts(env) {
-
   try {
-
-    console.log(
-      `[${new Date().toISOString()}] START ALERTS API`
-    );
-
-
     /*
-    -------------------------------
-    Перевірка Secrets / KV
-    -------------------------------
-    */
+     * Перевірка необхідних змінних
+     */
 
     if (!env.ALERTS_API_TOKEN) {
-      throw new Error(
-        "ALERTS_API_TOKEN не налаштований"
-      );
+      throw new Error("ALERTS_API_TOKEN не налаштований");
     }
 
     if (!env.BOT_TOKEN) {
-      throw new Error(
-        "BOT_TOKEN не налаштований"
-      );
+      throw new Error("BOT_TOKEN не налаштований");
     }
 
     if (!env.CHAT_ID) {
-      throw new Error(
-        "CHAT_ID не налаштований"
-      );
+      throw new Error("CHAT_ID не налаштований");
     }
 
-    if (!env.BROVARY_ALERT_KV) {
-      throw new Error(
-        "BROVARY_ALERT_KV не підключений"
-      );
+    if (!env.ALERT_STATE) {
+      throw new Error("ALERT_STATE не підключений");
     }
 
-
     /*
-    -------------------------------
-    Запит до Alerts.in.ua
-    -------------------------------
-    */
+     * Запит до Alerts.in.ua
+     */
 
-    const response =
-      await fetch(
-        ALERTS_API_URL,
-        {
-          method: "GET",
+    const response = await fetch(ALERTS_API_URL, {
+      method: "GET",
+      headers: {
+        Authorization: `Bearer ${env.ALERTS_API_TOKEN}`,
+        Accept: "application/json",
+      },
+    });
 
-          headers: {
-            "Authorization":
-              `Bearer ${env.ALERTS_API_TOKEN}`,
-
-            "Accept":
-              "application/json"
-          }
-        }
-      );
-
-
-    /*
-    -------------------------------
-    Читаємо відповідь
-    -------------------------------
-    */
-
-    const responseText =
-      await response.text();
-
+    const responseText = await response.text();
 
     console.log(
-      `[${new Date().toISOString()}] ALERTS HTTP STATUS=${response.status}`
+      `[${new Date().toISOString()}] ALERTS API HTTP ${response.status}, body length=${responseText.length}`
     );
-
-    console.log(
-      `[${new Date().toISOString()}] ALERTS RESPONSE LENGTH=${responseText.length}`
-    );
-
-
-    /*
-    -------------------------------
-    Помилка API
-    -------------------------------
-    */
 
     if (!response.ok) {
-
-      console.error(
-        `ALERTS_API_ERROR status=${response.status} body=${responseText}`
+      throw new Error(
+        `Alerts.in.ua HTTP ${response.status}: ${responseText.slice(0, 500)}`
       );
-
-      return {
-        ok: false,
-        source: "alerts.in.ua",
-        status: response.status,
-        error: responseText
-      };
     }
-
-
-    /*
-    -------------------------------
-    JSON
-    -------------------------------
-    */
 
     let data;
 
     try {
-
-      data =
-        JSON.parse(responseText);
-
+      data = JSON.parse(responseText);
     } catch (error) {
+      throw new Error(
+        `Не вдалося розібрати JSON Alerts.in.ua: ${getErrorMessage(error)}`
+      );
+    }
 
+    /*
+     * Пошук активної повітряної тривоги
+     * саме для Броварського району
+     */
+
+    const alerts = Array.isArray(data?.alerts)
+      ? data.alerts
+      : [];
+
+    const brovaryAlert = alerts.find((alert) => {
+      return (
+        String(alert?.location_uid) === BROVARY_RAION_UID &&
+        alert?.alert_type === "air_raid"
+      );
+    });
+
+    /*
+     * Отримуємо попередній стан
+     */
+
+    let saved = null;
+
+    try {
+      const savedText = await env.ALERT_STATE.get(KV_KEY);
+
+      if (savedText) {
+        saved = JSON.parse(savedText);
+      }
+    } catch (error) {
       console.error(
-        `JSON_PARSE_ERROR message=${getErrorMessage(error)}`
+        `[${new Date().toISOString()}] KV_READ_ERROR message=${getErrorMessage(
+          error
+        )}`
       );
 
-      console.error(
-        `RAW_API_RESPONSE=${responseText}`
-      );
+      saved = null;
+    }
 
-      return {
-        ok: false,
-        error:
-          "Alerts.in.ua повернув некоректний JSON"
+    /*
+     * Нормалізуємо старий/відсутній стан
+     */
+
+    if (!saved || typeof saved !== "object") {
+      saved = {
+        active: false,
+        startedAt: null,
+        level: null,
       };
     }
 
-
     /*
-    -------------------------------
-    Масив активних тривог
-    -------------------------------
-    */
+     * Якщо активної тривоги немає
+     */
 
-    const alerts =
-      Array.isArray(data.alerts)
-        ? data.alerts
-        : [];
+    if (!brovaryAlert) {
+      if (saved.active) {
+        const startedAt = saved.startedAt
+          ? new Date(saved.startedAt)
+          : null;
 
-
-    console.log(
-      `[${new Date().toISOString()}] TOTAL_ACTIVE_ALERTS=${alerts.length}`
-    );
-
-
-    /*
-    -------------------------------
-    Шукаємо Броварський район
-    -------------------------------
-    */
-
-    const brovaryAlerts =
-      alerts.filter(
-        alert =>
-          String(alert.location_uid) ===
-            BROVARY_RAION_UID &&
-
-          alert.alert_type ===
-            "air_raid"
-      );
-
-
-    console.log(
-      `[${new Date().toISOString()}] BROVARY_ALERTS=${brovaryAlerts.length}`
-    );
-
-
-    const currentAlert =
-      brovaryAlerts[0] || null;
-
-
-    /*
-    -------------------------------
-    Читаємо попередній стан з KV
-    -------------------------------
-    */
-
-    const saved =
-      await env.BROVARY_ALERT_KV.get(
-        KV_KEY,
-        "json"
-      );
-
-
-    console.log(
-      `[${new Date().toISOString()}] SAVED_STATE=${JSON.stringify(saved)}`
-    );
-
-
-    /*
-    ==================================================
-    НЕМАЄ АКТИВНОЇ ТРИВОГИ
-    ==================================================
-    */
-
-    if (!currentAlert) {
-
-      /*
-      Якщо раніше тривога була активна —
-      це відбій
-      */
-
-      if (
-        saved &&
-        saved.active
-      ) {
-
-        const startedAt =
-          new Date(
-            saved.startedAt
-          );
-
-        const finishedAt =
-          new Date();
-
-        const durationMs =
-          finishedAt.getTime() -
-          startedAt.getTime();
-
-        const duration =
-          formatDuration(
-            durationMs
-          );
-
-
-        console.log(
-          `[${new Date().toISOString()}] ALERT FINISHED duration=${duration}`
-        );
-
-
-        /*
-        Telegram
-        */
+        const duration = startedAt
+          ? formatDuration(Date.now() - startedAt.getTime())
+          : null;
 
         await sendTelegram(
           env,
-
-          `🟢 <b>ВІДБІЙ ТРИВОГИ</b>\n\n` +
-          `⏱ Тривалість: <b>${duration}</b>`
+          `🟢 <b>ВІДБІЙ ТРИВОГИ</b>${
+            duration ? `\n⏱ Тривалість: ${duration}` : ""
+          }`
         );
 
-
-        /*
-        Оновлюємо KV
-        */
-
-        await env.BROVARY_ALERT_KV.put(
+        await env.ALERT_STATE.put(
           KV_KEY,
-
           JSON.stringify({
             active: false,
-
-            level:
-              saved.level,
-
-            startedAt:
-              saved.startedAt,
-
-            finishedAt:
-              finishedAt.toISOString()
+            startedAt: null,
+            level: null,
           })
         );
 
+        console.log(
+          `[${new Date().toISOString()}] ALERT FINISHED`
+        );
 
         return {
           ok: true,
-
-          state:
-            "finished",
-
+          state: "finished",
           duration,
-
-          startedAt:
-            saved.startedAt,
-
-          finishedAt:
-            finishedAt.toISOString()
         };
       }
 
-
-      /*
-      Тривоги немає і раніше
-      теж не було
-      */
-
       return {
         ok: true,
-
-        state:
-          "no_alert"
+        state: "no_alert",
       };
     }
 
-
     /*
-    ==================================================
-    Є АКТИВНА ТРИВОГА
-    ==================================================
-    */
+     * Визначаємо рівень тривоги
+     */
 
     const level =
-      currentAlert.alert_level === "red"
-        ? "red"
-        : "yellow";
+      String(brovaryAlert.alert_level || "").toLowerCase();
 
+    let telegramMessage;
 
-    const apiStartedAt =
-      currentAlert.started_at ||
-      new Date().toISOString();
-
-
-    console.log(
-      `[${new Date().toISOString()}] ACTIVE ALERT level=${level} started=${apiStartedAt}`
-    );
-
-
-    /*
-    ==================================================
-    НОВА ТРИВОГА
-    ==================================================
-    */
-
-    if (
-      !saved ||
-      !saved.active
-    ) {
-
-      console.log(
-        `[${new Date().toISOString()}] NEW ALERT`
-      );
-
-
-      /*
-      Зберігаємо стан
-      */
-
-      await env.BROVARY_ALERT_KV.put(
-        KV_KEY,
-
-        JSON.stringify({
-          active: true,
-
-          level:
-            level,
-
-          startedAt:
-            apiStartedAt
-        })
-      );
-
-
-      /*
-      Telegram
-      */
-
-      if (level === "red") {
-
-        await sendTelegram(
-          env,
-
-          `🔴 <b>ЧЕРВОНА ТРИВОГА</b>`
-        );
-
-      } else {
-
-        await sendTelegram(
-          env,
-
-          `🟡 <b>ЖОВТА ТРИВОГА</b>`
-        );
-      }
-
-
-      return {
-        ok: true,
-
-        state:
-          "started",
-
-        level,
-
-        startedAt:
-          apiStartedAt
-      };
+    if (level === "red") {
+      telegramMessage = "🔴 <b>ЧЕРВОНА ТРИВОГА</b>";
+    } else {
+      telegramMessage = "🟡 <b>ЖОВТА ТРИВОГА</b>";
     }
 
-
     /*
-    ==================================================
-    ЗМІНА РІВНЯ
-    ==================================================
-    */
+     * Нова тривога
+     */
 
-    if (
-      saved.level !== level
-    ) {
+    if (!saved.active) {
+      const startedAt =
+        brovaryAlert.started_at ||
+        new Date().toISOString();
 
-      console.log(
-        `[${new Date().toISOString()}] LEVEL CHANGED ${saved.level} -> ${level}`
-      );
+      await sendTelegram(env, telegramMessage);
 
-
-      await env.BROVARY_ALERT_KV.put(
+      await env.ALERT_STATE.put(
         KV_KEY,
-
         JSON.stringify({
-          ...saved,
-
           active: true,
-
-          level:
-            level
-        })
-      );
-
-
-      if (level === "red") {
-
-        await sendTelegram(
-          env,
-
-          `🔴 <b>ЧЕРВОНА ТРИВОГА</b>`
-        );
-
-      } else {
-
-        await sendTelegram(
-          env,
-
-          `🟡 <b>ЖОВТА ТРИВОГА</b>`
-        );
-      }
-
-
-      return {
-        ok: true,
-
-        state:
-          "level_changed",
-
-        from:
-          saved.level,
-
-        to:
+          startedAt,
           level,
+        })
+      );
 
-        startedAt:
-          saved.startedAt
+      console.log(
+        `[${new Date().toISOString()}] NEW ALERT level=${level} startedAt=${startedAt}`
+      );
+
+      return {
+        ok: true,
+        state: "active",
+        level,
+        startedAt,
       };
     }
 
+    /*
+     * Рівень змінився під час активної тривоги
+     */
+
+    if (saved.level !== level) {
+      await sendTelegram(env, telegramMessage);
+
+      await env.ALERT_STATE.put(
+        KV_KEY,
+        JSON.stringify({
+          active: true,
+          startedAt:
+            saved.startedAt ||
+            brovaryAlert.started_at ||
+            new Date().toISOString(),
+          level,
+        })
+      );
+
+      console.log(
+        `[${new Date().toISOString()}] ALERT LEVEL CHANGED ${saved.level} -> ${level}`
+      );
+
+      return {
+        ok: true,
+        state: "level_changed",
+        previousLevel: saved.level,
+        level,
+      };
+    }
 
     /*
-    ==================================================
-    ТРИВОГА ПРОДОВЖУЄТЬСЯ
-    ==================================================
-    */
+     * Тривога все ще активна
+     */
 
     return {
       ok: true,
-
-      state:
-        "active",
-
+      state: "active",
       level,
-
       startedAt:
-        saved.startedAt
+        saved.startedAt ||
+        brovaryAlert.started_at ||
+        null,
     };
-
-
   } catch (error) {
-
-    const message =
-      getErrorMessage(error);
-
-    const stack =
-      String(
-        error?.stack ||
-        "no stack"
-      );
-
-
-    /*
-    ВАЖЛИВО:
-    один console.error = один рядок.
-    Так Cloudflare Observability
-    не губить message.
-    */
-
     console.error(
-      `CHECK_ERROR message=${message} stack=${stack}`
+      `[${new Date().toISOString()}] CHECK_ERROR message=${getErrorMessage(
+        error
+      )} stack=${error?.stack || "no-stack"}`
     );
-
 
     return {
       ok: false,
-
-      state:
-        "error",
-
-      error:
-        message
+      state: "error",
+      error: getErrorMessage(error),
     };
   }
 }
 
-
-/*
-==================================================
-TELEGRAM
-==================================================
-*/
-
-async function sendTelegram(
-  env,
-  message
-) {
-
-  console.log(
-    `[${new Date().toISOString()}] TELEGRAM SEND`
-  );
-
-
+async function sendTelegram(env, message) {
   const telegramUrl =
-    `https://api.telegram.org/bot` +
-    `${env.BOT_TOKEN}` +
-    `/sendMessage`;
+    `https://api.telegram.org/bot${env.BOT_TOKEN}/sendMessage`;
 
+  const response = await fetch(telegramUrl, {
+    method: "POST",
+    headers: {
+      "content-type": "application/json",
+    },
+    body: JSON.stringify({
+      chat_id: env.CHAT_ID,
+      text: message,
+      parse_mode: "HTML",
+      disable_web_page_preview: true,
+    }),
+  });
 
-  const response =
-    await fetch(
-      telegramUrl,
-      {
-        method: "POST",
-
-        headers: {
-          "Content-Type":
-            "application/json"
-        },
-
-        body:
-          JSON.stringify({
-            chat_id:
-              env.CHAT_ID,
-
-            text:
-              message,
-
-            parse_mode:
-              "HTML",
-
-            disable_web_page_preview:
-              true
-          })
-      }
-    );
-
-
-  const responseText =
-    await response.text();
-
+  const responseText = await response.text();
 
   console.log(
-    `[${new Date().toISOString()}] TELEGRAM HTTP STATUS=${response.status}`
+    `[${new Date().toISOString()}] TELEGRAM HTTP ${response.status}, body=${responseText.slice(
+      0,
+      500
+    )}`
   );
-
 
   if (!response.ok) {
-
-    console.error(
-      `TELEGRAM_API_ERROR status=${response.status} body=${responseText}`
-    );
-
     throw new Error(
-      `Telegram API ${response.status}: ${responseText}`
+      `Telegram HTTP ${response.status}: ${responseText.slice(0, 500)}`
     );
   }
 
+  let data;
 
-  console.log(
-    `[${new Date().toISOString()}] TELEGRAM OK`
-  );
+  try {
+    data = JSON.parse(responseText);
+  } catch (error) {
+    throw new Error(
+      `Telegram повернув некоректний JSON: ${getErrorMessage(error)}`
+    );
+  }
+
+  if (!data.ok) {
+    throw new Error(
+      `Telegram API error: ${data.description || "unknown error"}`
+    );
+  }
+
+  return data;
 }
 
-
-/*
-==================================================
-ПОМИЛКА
-==================================================
-*/
-
-function getErrorMessage(
-  error
-) {
-
-  if (
-    error instanceof Error
-  ) {
-    return (
-      error.message ||
-      error.toString()
-    );
+function formatDuration(milliseconds) {
+  if (!Number.isFinite(milliseconds) || milliseconds < 0) {
+    return null;
   }
 
+  const totalSeconds = Math.floor(milliseconds / 1000);
 
-  if (
-    typeof error ===
-    "string"
-  ) {
+  const hours = Math.floor(totalSeconds / 3600);
+  const minutes = Math.floor((totalSeconds % 3600) / 60);
+  const seconds = totalSeconds % 60;
+
+  const parts = [];
+
+  if (hours > 0) {
+    parts.push(`${hours} год`);
+  }
+
+  if (minutes > 0 || hours > 0) {
+    parts.push(`${minutes} хв`);
+  }
+
+  parts.push(`${seconds} сек`);
+
+  return parts.join(" ");
+}
+
+function getErrorMessage(error) {
+  if (error instanceof Error) {
+    return error.message;
+  }
+
+  if (typeof error === "string") {
     return error;
   }
 
-
   try {
-
-    return JSON.stringify(
-      error
-    );
-
+    return JSON.stringify(error);
   } catch {
-
-    return String(error);
+    return "Невідома помилка";
   }
 }
-
-
-/*
-==================================================
-ФОРМАТУВАННЯ ТРИВАЛОСТІ
-==================================================
-*/
-
-function formatDuration(
-  ms
-) {
-
-  if (
-    !Number.isFinite(ms) ||
-    ms < 0
-  ) {
-    return "невідомо";
-  }
-
-
-  const totalSeconds =
-    Math.floor(
-      ms / 1000
-    );
-
-
-  const hours =
-    Math.floor(
-      totalSeconds / 3600
-    );
-
-
-  const minutes =
-    Math.floor(
-      (totalSeconds % 3600) /
-      60
-    );
-
-
-  const seconds =
-    totalSeconds % 60;
-
-
-  const result = [];
-
-
-  if (hours > 0) {
-    result.push(
-      `${hours} год`
-    );
-  }
-
-
-  if (minutes > 0) {
-    result.push(
-      `${minutes} хв`
-    );
-  }
-
-
-  if (
-    result.length === 0 &&
-    seconds > 0
-  ) {
-    result.push(
-      `${seconds} сек`
-    );
-  }
-
-
-  if (
-    result.length === 0
-  ) {
-    result.push(
-      "0 сек"
-    );
-  }
-
-
-  return result.join(" ");
-}
-
-
-/*
-==================================================
-SLEEP
-==================================================
-*/
 
 function sleep(ms) {
-
-  return new Promise(
-    resolve =>
-      setTimeout(
-        resolve,
-        ms
-      )
-  );
+  return new Promise((resolve) => setTimeout(resolve, ms));
 }
