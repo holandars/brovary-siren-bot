@@ -9,8 +9,8 @@ const ALERTS_API_URL =
   "https://api.alerts.in.ua/v1/alerts/active.json";
 
 export default {
-  async scheduled(event, env, ctx) {
-    ctx.waitUntil(runChecks(env));
+  async scheduled(event, env) {
+    await runChecks(env);
   },
 
   async fetch(request, env) {
@@ -67,10 +67,6 @@ async function runChecks(env) {
 
 async function checkAlerts(env) {
   try {
-    /*
-     * Перевірка необхідних змінних
-     */
-
     if (!env.ALERTS_API_TOKEN) {
       throw new Error("ALERTS_API_TOKEN не налаштований");
     }
@@ -86,10 +82,6 @@ async function checkAlerts(env) {
     if (!env.ALERT_STATE) {
       throw new Error("ALERT_STATE не підключений");
     }
-
-    /*
-     * Запит до Alerts.in.ua
-     */
 
     const response = await fetch(ALERTS_API_URL, {
       method: "GET",
@@ -121,11 +113,6 @@ async function checkAlerts(env) {
       );
     }
 
-    /*
-     * Пошук активної повітряної тривоги
-     * саме для Броварського району
-     */
-
     const alerts = Array.isArray(data?.alerts)
       ? data.alerts
       : [];
@@ -136,10 +123,6 @@ async function checkAlerts(env) {
         alert?.alert_type === "air_raid"
       );
     });
-
-    /*
-     * Отримуємо попередній стан
-     */
 
     let saved = null;
 
@@ -159,10 +142,6 @@ async function checkAlerts(env) {
       saved = null;
     }
 
-    /*
-     * Нормалізуємо старий/відсутній стан
-     */
-
     if (!saved || typeof saved !== "object") {
       saved = {
         active: false,
@@ -172,7 +151,7 @@ async function checkAlerts(env) {
     }
 
     /*
-     * Якщо активної тривоги немає
+     * Немає активної тривоги
      */
 
     if (!brovaryAlert) {
@@ -219,7 +198,7 @@ async function checkAlerts(env) {
     }
 
     /*
-     * Визначаємо рівень тривоги
+     * Визначення рівня тривоги
      */
 
     const level =
@@ -266,7 +245,7 @@ async function checkAlerts(env) {
     }
 
     /*
-     * Рівень змінився під час активної тривоги
+     * Зміна рівня під час активної тривоги
      */
 
     if (saved.level !== level) {
