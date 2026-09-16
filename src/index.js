@@ -1,3 +1,4 @@
+```js
 const BROVARY_RAION_UID = "79";
 
 const KV_KEY = "brovary_alert_state";
@@ -64,6 +65,7 @@ async function runChecks(env) {
 
     if (i < CHECKS_PER_RUN) {
       const elapsed = Date.now() - started;
+
       const waitTime = Math.max(
         0,
         CHECK_INTERVAL_MS - elapsed
@@ -169,7 +171,7 @@ async function checkAlerts(env) {
     }
 
     /*
-     * Немає активної тривоги
+     * НЕМАЄ АКТИВНОЇ ТРИВОГИ
      */
 
     if (!brovaryAlert) {
@@ -220,26 +222,44 @@ async function checkAlerts(env) {
     }
 
     /*
-     * Визначення рівня
+     * ВИЗНАЧЕННЯ РІВНЯ
+     *
+     * Дозволені тільки:
+     * yellow
+     * red
+     *
+     * Будь-яке інше значення НЕ вважається
+     * жовтим рівнем.
      */
 
-    const level =
-      String(
-        brovaryAlert.alert_level || ""
-      ).toLowerCase();
+    const level = String(
+      brovaryAlert.alert_level || ""
+    ).toLowerCase();
 
     let telegramMessage;
 
     if (level === "red") {
       telegramMessage =
         "🔴 <b>ЧЕРВОНИЙ РІВЕНЬ НЕБЕЗПЕКИ</b>";
-    } else {
+    } else if (level === "yellow") {
       telegramMessage =
         "🟡 <b>ЖОВТИЙ РІВЕНЬ НЕБЕЗПЕКИ</b>";
+    } else {
+      console.error(
+        `[${new Date().toISOString()}] UNKNOWN_ALERT_LEVEL level=${JSON.stringify(
+          brovaryAlert.alert_level
+        )}`
+      );
+
+      return {
+        ok: false,
+        state: "unknown_level",
+        level: brovaryAlert.alert_level ?? null,
+      };
     }
 
     /*
-     * Нова тривога
+     * НОВА ТРИВОГА
      */
 
     if (!saved.active) {
@@ -274,7 +294,7 @@ async function checkAlerts(env) {
     }
 
     /*
-     * Зміна рівня
+     * ЗМІНА РІВНЯ
      */
 
     if (saved.level !== level) {
@@ -308,7 +328,7 @@ async function checkAlerts(env) {
     }
 
     /*
-     * Тривога все ще активна
+     * ТРИВОГА ВСЕ ЩЕ АКТИВНА
      */
 
     return {
@@ -453,3 +473,29 @@ function getErrorMessage(error) {
 function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
+```
+
+### Що саме тепер працює
+
+```text
+yellow → 🟡 ЖОВТИЙ РІВЕНЬ НЕБЕЗПЕКИ
+red    → 🔴 ЧЕРВОНИЙ РІВЕНЬ НЕБЕЗПЕКИ
+```
+
+А відбій визначається **не через `alert_level`**, а через відсутність активної `air_raid` для UID `79`:
+
+```text
+активна тривога → немає активної тривоги
+                    ↓
+             🟢 ВІДБІЙ ПОВІТРЯНОЇ НЕБЕЗПЕКИ
+```
+
+Також збережено `startedAt`, тому якщо буде:
+
+```text
+🟡 → 🔴 → 🟡 → 🟢
+```
+
+тривалість рахується **від початку самої тривоги**, а не від моменту переходу на червоний рівень.
+
+Після вставки в Cloudflare можеш відкрити `/check`: у твоєму поточному стані очікувано має бути `level: "yellow"`.
