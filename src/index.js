@@ -1,6 +1,378 @@
 const BROVARY_RAION_UID = "79";
 const KV_KEY = "brovary_alert_state";
 
+const CHECKS_PER_RUN = 6;
+const CHECK_INTERVAL_MS = 10_000;
+
+export default {
+  async scheduled(event, env, ctx) {
+    await runChecks(env);
+  },
+
+  async fetch(request, env) {
+    const url = new URL(request.url);
+
+    if (url.pathname === "/check") {
+      const result = await checkAlerts(env);
+
+      return new Response(
+        JSON.stringify(result, null, 2),
+        {
+          headers: {
+            "Content-Type": "application/json; charset=utf-8"
+          }
+        }
+      );
+    }
+
+    return new Response(
+      "Alerts monitor is running.",
+      {
+        headers: {
+          "Content-Type": "text/plain; charset=utf-8"
+        }
+      }
+    );
+  }
+};
+
+async function runChecks(env) {
+  for (let i = 0; i < CHECKS_PER_RUN; i++) {
+    console.log(
+      `[${new Date().toISOString()}] Alert check ${i + 1}/${CHECKS_PER_RUN}`
+    );
+
+    try {
+      await checkAlerts(env);
+    } catch (error) {
+      console.error(
+        "Alert check error:",
+        error.message,
+        error.stack
+      );
+    }
+
+    if (i < CHECKS_PER_RUN - 1) {
+      await sleep(CHECK_INTERVAL_MS);
+    }
+  }
+}
+
+async function checkAlerts(env) {
+  try {
+    if (!env.ALERTS_API_TOKEN) {
+      throw new Error(
+        "ALERTS_API_TOKEN не налаштований"
+      );
+    }
+
+    if (!env.BROVARY_ALERT_KV) {
+      throw new Error(
+        "BROVARY_ALERT_KV не підключений"
+      );
+    }
+
+    const response = await fetch(
+      "https://api.alerts.in.ua/v1/alerts/active.json",
+      {
+        method: "GET",
+        headers: {
+          "Authorization":
+            `Bearer ${env.ALERTS_API_TOKEN}`,
+          "Accept":
+            "application/json"
+        }
+      }
+    );
+
+    if (!response.ok) {
+      const errorText = await response.text();
+
+      console.error(
+        `Alerts.in.ua HTTP ${response.status}:`,
+        errorText
+      );
+
+      return {
+        ok: false,
+        api_status: response.status,
+        error:
+          errorText ||
+          "Alerts.in.ua API error"
+      };
+    }
+
+    const data = await response.json();
+
+    const alerts =
+      Array.isArray(data.alerts)
+        ? data.alerts
+        : [];
+
+    const brovaryAlerts =
+      alerts.filter(
+        alert =>
+          String(alert.location_uid) === BROVARY_RAION_UID &&
+          alert.alert_type === "air_raid"
+      );
+
+    const currentAlert =
+      brovaryAlerts[0] || null;
+
+    const saved =
+      await env.BROVARY_ALERT_KV.get(
+        KV_KEY,
+        "json"
+      );
+
+    if (!currentAlert) {
+      if (saved && saved.active) {
+        const startedAt =
+          new Date(saved.startedAt);
+
+        const finishedAt =
+          new Date();
+
+        const durationMs =
+          finishedAt.getTime() -
+          startedAt.getTime();
+
+        const duration =
+          formatDuration(durationMs);
+
+        await sendTelegram(
+          env,
+          `🟢 <b>ВІДБІЙ ТРИВОГИ</b>\n\n` +
+          `⏱ Тривалість: <b>${duration}</b>`
+        );
+
+        await env.BROVARY_ALERT_KV.put(
+          KV_KEY,
+          JSON.stringify({
+            active: false,
+            level: saved.level,
+            startedAt: saved.startedAt,
+            finishedAt:
+              finishedAt.toISOString()
+          })
+        );
+
+        return {
+          ok: true,
+          state: "finished",
+          duration,
+          startedAt: saved.startedAt,
+          finishedAt:
+            finishedAt.toISOString()
+        };
+      }
+
+      return {
+        ok: true,
+        state: "no_alert"
+      };
+    }
+
+    const level =
+      currentAlert.alert_level === "red"
+        ? "red"
+        : "yellow";
+
+    const apiStartedAt =
+      currentAlert.started_at ||
+      new Date().toISOString();
+
+    if (!saved || !saved.active) {
+      await env.BROVARY_ALERT_KV.put(
+        KV_KEY,
+        JSON.stringify({
+          active: true,
+          level: level,
+          startedAt: apiStartedAt
+        })
+      );
+
+      if (level === "red") {
+        await sendTelegram(
+          env,
+          `🔴 <b>ЧЕРВОНА ТРИВОГА</b>`
+        );
+      } else {
+        await sendTelegram(
+          env,
+          `🟡 <b>ЖОВТА ТРИВОГА</b>`
+        );
+      }
+
+      return {
+        ok: true,
+        state: "started",
+        level: level,
+        startedAt: apiStartedAt
+      };
+    }
+
+    if (saved.level !== level) {
+      await env.BROVARY_ALERT_KV.put(
+        KV_KEY,
+        JSON.stringify({
+          ...saved,
+          active: true,
+          level: level
+        })
+      );
+
+      if (level === "red") {
+        await sendTelegram(
+          env,
+          `🔴 <b>ЧЕРВОНА ТРИВОГА</b>`
+        );
+
+        return {
+          ok: true,
+          state: "level_changed",
+          from: saved.level,
+          to: "red",
+          startedAt: saved.startedAt
+        };
+      }
+
+      if (level === "yellow") {
+        await sendTelegram(
+          env,
+          `🟡 <b>ЖОВТА ТРИВОГА</b>`
+        );
+
+        return {
+          ok: true,
+          state: "level_changed",
+          from: saved.level,
+          to: "yellow",
+          startedAt: saved.startedAt
+        };
+      }
+    }
+
+    return {
+      ok: true,
+      state: "active",
+      level: level,
+      startedAt: saved.startedAt
+    };
+
+  } catch (error) {
+    console.error(
+      "checkAlerts error:",
+      error.message,
+      error.stack
+    );
+
+    return {
+      ok: false,
+      error: error.message
+    };
+  }
+}
+
+async function sendTelegram(env, message) {
+  if (!env.BOT_TOKEN) {
+    throw new Error(
+      "BOT_TOKEN не налаштований"
+    );
+  }
+
+  if (!env.CHAT_ID) {
+    throw new Error(
+      "CHAT_ID не налаштований"
+    );
+  }
+
+  const telegramUrl =
+    `https://api.telegram.org/bot` +
+    `${env.BOT_TOKEN}/sendMessage`;
+
+  const response = await fetch(
+    telegramUrl,
+    {
+      method: "POST",
+      headers: {
+        "Content-Type":
+          "application/json"
+      },
+      body: JSON.stringify({
+        chat_id: env.CHAT_ID,
+        text: message,
+        parse_mode: "HTML",
+        disable_web_page_preview: true
+      })
+    }
+  );
+
+  if (!response.ok) {
+    const errorText =
+      await response.text();
+
+    throw new Error(
+      `Telegram API ${response.status}: ` +
+      `${errorText}`
+    );
+  }
+}
+
+function formatDuration(ms) {
+  if (
+    !Number.isFinite(ms) ||
+    ms < 0
+  ) {
+    return "невідомо";
+  }
+
+  const totalSeconds =
+    Math.floor(ms / 1000);
+
+  const hours =
+    Math.floor(totalSeconds / 3600);
+
+  const minutes =
+    Math.floor(
+      (totalSeconds % 3600) / 60
+    );
+
+  const seconds =
+    totalSeconds % 60;
+
+  const result = [];
+
+  if (hours > 0) {
+    result.push(`${hours} год`);
+  }
+
+  if (minutes > 0) {
+    result.push(`${minutes} хв`);
+  }
+
+  if (
+    result.length === 0 &&
+    seconds > 0
+  ) {
+    result.push(`${seconds} сек`);
+  }
+
+  if (result.length === 0) {
+    result.push("0 сек");
+  }
+
+  return result.join(" ");
+}
+
+function sleep(ms) {
+  return new Promise(
+    resolve =>
+      setTimeout(resolve, ms)
+  );
+}const BROVARY_RAION_UID = "79";
+const KV_KEY = "brovary_alert_state";
+
 // =====================================================
 // НАЛАШТУВАННЯ ШВИДКОСТІ
 // =====================================================
