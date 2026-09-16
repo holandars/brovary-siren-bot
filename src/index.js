@@ -186,9 +186,9 @@ async function checkAlerts(env) {
 
         await sendTelegram(
           env,
-          `🟢 <b>ВІДБІЙ ТРИВОГИ</b>${
+          `🟢 <b>ВІДБІЙ ПОВІТРЯНОЇ НЕБЕЗПЕКИ</b>${
             duration
-              ? `\n⏱ Тривалість: ${duration}`
+              ? `\n⏱ Небезпека тривала: ${duration}`
               : ""
           }`
         );
@@ -232,10 +232,10 @@ async function checkAlerts(env) {
 
     if (level === "red") {
       telegramMessage =
-        "🔴 <b>ЧЕРВОНА ТРИВОГА</b>";
+        "🔴 <b>ЧЕРВОНИЙ РІВЕНЬ НЕБЕЗПЕКИ</b>";
     } else {
       telegramMessage =
-        "🟡 <b>ЖОВТА ТРИВОГА</b>";
+        "🟡 <b>ЖОВТИЙ РІВЕНЬ НЕБЕЗПЕКИ</b>";
     }
 
     /*
