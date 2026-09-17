@@ -187,7 +187,7 @@ async function checkAlerts(env) {
 
         await sendTelegram(
           env,
-          `🟢 <b>ВІДБІЙ ПОВІТРЯНОЇ НЕБЕЗПЕКИ</b>${
+          `🟢 <b>ВІДБІЙ ПОВІТРЯНОЇ ТРИВОГИ</b>${
             duration
               ? `\n\n⏱ Небезпека тривала: ${duration}`
               : ""
@@ -239,10 +239,10 @@ async function checkAlerts(env) {
 
     if (level === "red") {
       telegramMessage =
-        "🔴 <b>ЧЕРВОНИЙ РІВЕНЬ НЕБЕЗПЕКИ</b>";
+        "🔴 <b>ПОВІТРЯНА ТРИВОГА</b>";
     } else if (level === "yellow") {
       telegramMessage =
-        "🟡 <b>ЖОВТИЙ РІВЕНЬ НЕБЕЗПЕКИ</b>";
+        "🟡 <b>ПОВІТРЯНА ТРИВОГА</b>";
     } else {
       console.error(
         `[${new Date().toISOString()}] UNKNOWN_ALERT_LEVEL level=${JSON.stringify(
