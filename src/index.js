@@ -189,7 +189,7 @@ async function checkAlerts(env) {
           env,
           `🟢 <b>ВІДБІЙ ПОВІТРЯНОЇ ТРИВОГИ</b>${
             duration
-              ? `\n\n⏱ Небезпека тривала <b>${duration}</b>`
+              ? `\n\n⏱ Небезпека тривала: <b>${duration}</b>`
               : ""
           }`
         );
