@@ -189,7 +189,7 @@ async function checkAlerts(env) {
           env,
           `🟢 <b>ВІДБІЙ ПОВІТРЯНОЇ ТРИВОГИ</b>${
             duration
-              ? `\n\n⏱ Небезпека тривала: ${duration}`
+              ? `\n\n⏱ Небезпека тривала: <b>${duration}</b>`
               : ""
           }`
         );
@@ -421,6 +421,17 @@ async function sendTelegram(env, message) {
  *
  * Секунди не показуються.
  * Залишаються тільки години та хвилини.
+ *
+ * Використовується знахідний відмінок:
+ * 1 годину
+ * 2 години
+ * 5 годин
+ * 21 годину
+ *
+ * 1 хвилину
+ * 2 хвилини
+ * 5 хвилин
+ * 21 хвилину
  */
 
 function formatDuration(milliseconds) {
@@ -443,14 +454,55 @@ function formatDuration(milliseconds) {
   const parts = [];
 
   if (hours > 0) {
-    parts.push(`${hours} год`);
+    parts.push(
+      `${hours} ${getUkrainianAccusative(
+        hours,
+        "годину",
+        "години",
+        "годин"
+      )}`
+    );
   }
 
   if (minutes > 0 || hours === 0) {
-    parts.push(`${minutes} хв`);
+    parts.push(
+      `${minutes} ${getUkrainianAccusative(
+        minutes,
+        "хвилину",
+        "хвилини",
+        "хвилин"
+      )}`
+    );
   }
 
   return parts.join(" ");
+}
+
+function getUkrainianAccusative(
+  value,
+  one,
+  few,
+  many
+) {
+  const mod10 = value % 10;
+  const mod100 = value % 100;
+
+  if (
+    mod10 === 1 &&
+    mod100 !== 11
+  ) {
+    return one;
+  }
+
+  if (
+    mod10 >= 2 &&
+    mod10 <= 4 &&
+    (mod100 < 10 || mod100 >= 20)
+  ) {
+    return few;
+  }
+
+  return many;
 }
 
 function getErrorMessage(error) {
