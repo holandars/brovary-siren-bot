@@ -1,4 +1,3 @@
-```js
 const BROVARY_RAION_UID = "79";
 
 const KV_KEY = "brovary_alert_state";
@@ -190,8 +189,7 @@ async function checkAlerts(env) {
           env,
           `🟢 <b>ВІДБІЙ ПОВІТРЯНОЇ НЕБЕЗПЕКИ</b>${
             duration
-              
-            ? `\n⏱ Небезпека тривала: ${duration}`
+              ? `\n\n⏱ Небезпека тривала: ${duration}`
               : ""
           }`
         );
@@ -418,6 +416,13 @@ async function sendTelegram(env, message) {
   return data;
 }
 
+/*
+ * ФОРМАТУВАННЯ ТРИВАЛОСТІ
+ *
+ * Секунди не показуються.
+ * Залишаються тільки години та хвилини.
+ */
+
 function formatDuration(milliseconds) {
   if (
     !Number.isFinite(milliseconds) ||
@@ -426,19 +431,14 @@ function formatDuration(milliseconds) {
     return null;
   }
 
-  const totalSeconds =
-    Math.floor(milliseconds / 1000);
+  const totalMinutes =
+    Math.floor(milliseconds / 60000);
 
   const hours =
-    Math.floor(totalSeconds / 3600);
+    Math.floor(totalMinutes / 60);
 
   const minutes =
-    Math.floor(
-      (totalSeconds % 3600) / 60
-    );
-
-  const seconds =
-    totalSeconds % 60;
+    totalMinutes % 60;
 
   const parts = [];
 
@@ -446,11 +446,9 @@ function formatDuration(milliseconds) {
     parts.push(`${hours} год`);
   }
 
-  if (minutes > 0 || hours > 0) {
+  if (minutes > 0 || hours === 0) {
     parts.push(`${minutes} хв`);
   }
-
-  parts.push(`${seconds} сек`);
 
   return parts.join(" ");
 }
@@ -474,29 +472,3 @@ function getErrorMessage(error) {
 function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
-```
-
-### Що саме тепер працює
-
-```text
-yellow → 🟡 ЖОВТИЙ РІВЕНЬ НЕБЕЗПЕКИ
-red    → 🔴 ЧЕРВОНИЙ РІВЕНЬ НЕБЕЗПЕКИ
-```
-
-А відбій визначається **не через `alert_level`**, а через відсутність активної `air_raid` для UID `79`:
-
-```text
-активна тривога → немає активної тривоги
-                    ↓
-             🟢 ВІДБІЙ ПОВІТРЯНОЇ НЕБЕЗПЕКИ
-```
-
-Також збережено `startedAt`, тому якщо буде:
-
-```text
-🟡 → 🔴 → 🟡 → 🟢
-```
-
-тривалість рахується **від початку самої тривоги**, а не від моменту переходу на червоний рівень.
-
-Після вставки в Cloudflare можеш відкрити `/check`: у твоєму поточному стані очікувано має бути `level: "yellow"`.
